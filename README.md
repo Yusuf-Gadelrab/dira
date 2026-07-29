@@ -79,7 +79,7 @@ straight into CI. `--fail-on never` always exits `0`.
 ### GitHub Actions
 
 ```yaml
-- uses: Yusuf-Gadelrab/dira@v1
+- uses: Yusuf-Gadelrab/dira@v1     # moving tag, currently v1.1.0
   with:
     fail-on: high
     target: yourapp.com
