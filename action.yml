@@ -31,7 +31,7 @@ runs:
   using: composite
   steps:
     - shell: bash
-      run: pip install --quiet "dira-scan==1.1.0"
+      run: pip install --quiet "git+https://github.com/Yusuf-Gadelrab/dira@v1.1.0"
     - shell: bash
       run: |
         args=("${{ inputs.path }}" --format "${{ inputs.format }}" --output "${{ inputs.output }}" --fail-on "${{ inputs.fail-on }}")

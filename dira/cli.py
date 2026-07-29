@@ -247,7 +247,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - run: pip install dira-scan
+      - run: pip install git+https://github.com/Yusuf-Gadelrab/dira@v1.1.0
 
       # PRs: only what changed, so the gate stays fast.
       - name: Scan changed files

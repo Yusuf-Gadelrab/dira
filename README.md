@@ -16,9 +16,10 @@ DIRA is one binary-free Python command that answers the question a founder actua
 it finds.
 
 ```bash
-uvx dira-scan .                       # scan the current project
-uvx dira-scan . -t yourapp.com        # + audit the live domain
-uvx dira-scan . -f html -o report.html --open
+pipx install git+https://github.com/Yusuf-Gadelrab/dira@v1.1.0
+dira scan .                        # scan the current project
+dira scan . -t yourapp.com         # + audit the live domain
+dira scan . -f html -o report.html --open
 ```
 
 ## What it checks
@@ -38,11 +39,17 @@ Every finding carries a severity, a location, redacted evidence, a concrete reme
 ## Install
 
 ```bash
-uvx dira-scan .                    # no install (recommended)
-pipx install dira-scan             # isolated
-pip install dira-scan              # into the current env
-npx dira-scan .                    # from Node projects
+# from source (available now)
+pipx install git+https://github.com/Yusuf-Gadelrab/dira@v1.1.0
+uvx --from git+https://github.com/Yusuf-Gadelrab/dira@v1.1.0 dira scan .
+pip install git+https://github.com/Yusuf-Gadelrab/dira@v1.1.0
+
+# or grab the wheel from the release
+pipx install https://github.com/Yusuf-Gadelrab/dira/releases/download/v1.1.0/dira_scan-1.1.0-py3-none-any.whl
 ```
+
+> **Registry status:** the PyPI (`dira-scan`) and npm (`npx dira-scan`) packages are built and
+> ready but not published yet. Until they are, install from source or the release wheel above.
 
 ## Use it
 
