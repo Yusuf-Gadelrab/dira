@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 from ..core import Finding, redact
-from ..rules import DANGEROUS_FILES, is_placeholder, scan_secrets
+from ..rules import DANGEROUS_FILES, TEST_PATH_RE, is_placeholder, scan_secrets
 
 NAME = "git"
 
@@ -66,24 +66,40 @@ def scan(root: Path, history_commits: int = 200) -> list[Finding]:
 
 
 def _history_secrets(root: Path, commits: int) -> list[Finding]:
-    """Scan recent commit diffs — a rotated-out secret is still a live secret."""
+    """Scan recent commit diffs — a rotated-out secret is still a live secret.
+
+    Tracks the commit sha and the file each added line came from, so history hits are
+    attributed correctly and fixture paths are downgraded the same way the live-tree
+    scanners downgrade them.
+    """
     diff = _git(root, "log", f"-{commits}", "-p", "--no-color", "--no-merges",
                 "--diff-filter=AM", "-U0", timeout=60)
     if not diff:
         return []
+
     out: list[Finding] = []
     seen: set[str] = set()
-    commit = ""
-    for chunk in diff.split("\ncommit ")[:commits + 1]:
-        sha = chunk.split("\n", 1)[0].strip()[:8]
-        commit = sha or commit
-        added = "\n".join(l[1:] for l in chunk.splitlines()
-                          if l.startswith("+") and not l.startswith("+++"))
-        if not added:
-            continue
+    sha = ""
+    path = ""
+    # (sha, path) -> added text, so each file's additions are scanned in context
+    buckets: dict[tuple[str, str], list[str]] = {}
+
+    for line in diff.splitlines():
+        if line.startswith("commit "):
+            sha = line.split(" ", 1)[1].strip()[:8]
+            path = ""
+        elif line.startswith("+++ "):
+            target = line[4:].strip()
+            path = "" if target == "/dev/null" else target[2:] if target.startswith("b/") else target
+        elif line.startswith("+") and not line.startswith("+++") and path:
+            buckets.setdefault((sha, path), []).append(line[1:])
+
+    for (csha, cpath), lines in buckets.items():
+        added = "\n".join(lines)
+        low_trust = bool(TEST_PATH_RE.search(cpath)) or cpath.rsplit(".", 1)[-1] in ("md", "rst", "txt")
         for rule, m in scan_secrets(added):
             if rule.id == "generic-secret":
-                continue  # too noisy across history; live-tree scan covers it
+                continue  # too noisy across history; the live-tree scan covers it
             value = next((g for g in m.groups() if g), m.group(0))
             if is_placeholder(value) and rule.id != "private-key":
                 continue
@@ -91,10 +107,15 @@ def _history_secrets(root: Path, commits: int) -> list[Finding]:
             if key in seen:
                 continue
             seen.add(key)
+            sev = rule.severity
+            if low_trust:
+                sev = {"critical": "medium", "high": "low", "medium": "low"}.get(sev, "info")
             out.append(Finding(
                 id=f"git-history/{rule.id}",
-                title=f"{rule.title} found in git history (commit {commit})",
-                severity=rule.severity, scanner=NAME, path=f"git history @ {commit}", line=0,
+                title=(f"{rule.title} found in git history"
+                       + (" (test/docs path)" if low_trust else "")),
+                severity=sev, scanner=NAME,
+                path=f"{cpath} @ {csha}" if csha else cpath, line=0,
                 evidence=redact(value),
                 remediation="Deleting the file does not remove it from history — rotate the "
                             "credential now, then purge with git-filter-repo and force-push.",

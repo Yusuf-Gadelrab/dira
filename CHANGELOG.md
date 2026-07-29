@@ -20,6 +20,8 @@ Added
   publishes an SBOM artifact.
 
 Fixed
+- **Git-history findings now carry real file attribution** (`prod.py @ 8f21ac3` instead of a mangled
+  commit label) and are downgraded in test/fixture paths like every other scanner.
 - **Config findings in test/fixture paths are now downgraded** the way secret findings already
   were — a deliberately-vulnerable test fixture is not a production incident.
 - **`gcp-allusers` matched a bare substring**, so any file merely mentioning `allUsers` was flagged

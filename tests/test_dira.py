@@ -461,3 +461,39 @@ def test_gcp_allusers_needs_binding_context(tmp_path):
     prose = tmp_path / "notes.py"
     prose.write_text('RULE = "check for allUsers and allAuthenticatedUsers bindings"\n')
     assert "config/gcp-allusers" not in _ids(config_scan(prose, "notes.py"))
+
+
+def test_git_history_attributes_path_and_downgrades_fixtures(tmp_path):
+    """Regression: history findings had no file attribution (the commit label was
+    mangled) and fixture paths were graded as production incidents."""
+    def git(*a):
+        subprocess.run(["git", "-C", str(tmp_path), *a], check=True, capture_output=True,
+                       env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin:/usr/local/bin"})
+    try:
+        git("init", "-q", "-b", "main")
+    except Exception:
+        pytest.skip("git unavailable")
+    git("config", "user.email", "t@t.t")
+    git("config", "user.name", "t")
+
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "fixture.py").write_text(f'DSN = "{FAKE_DSN}"\n')
+    (tmp_path / "prod.py").write_text(f'KEY = "{FAKE_AWS}"\n')
+    git("add", "-A")
+    git("commit", "-qm", "add both")
+    (tmp_path / "prod.py").write_text("KEY = os.environ['KEY']\n")
+    git("add", "-A")
+    git("commit", "-qm", "remove")
+
+    r = scan(tmp_path, offline=True, enabled=["git"], use_cache=False)
+    hist = [f for f in r.findings if f.id.startswith("git-history/")]
+    assert hist, "history secrets not detected"
+    by_id = {f.id: f for f in hist}
+    assert "git-history/aws-access-key" in by_id
+    aws = by_id["git-history/aws-access-key"]
+    assert aws.severity == "critical"
+    assert aws.path.startswith("prod.py @ ")           # real file attribution
+    assert len(aws.path.split("@")[1].strip()) == 8    # a real short sha
+
+    if "git-history/db-url" in by_id:
+        assert by_id["git-history/db-url"].severity == "medium"  # fixture, downgraded
