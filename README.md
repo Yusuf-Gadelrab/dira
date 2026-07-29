@@ -19,7 +19,7 @@ DIRA answers the question a founder actually gets asked — *"is this codebase s
 an enterprise?"* — with a single command and no install footprint.
 
 ```bash
-pipx install git+https://github.com/Yusuf-Gadelrab/dira@v1.1.0
+pipx install git+https://github.com/Yusuf-Gadelrab/dira@v1.2.0
 dira scan .                        # scan the current project
 dira scan . -t yourapp.com         # + audit the live domain
 dira scan . -f html -o report.html --open
@@ -35,20 +35,71 @@ dira scan . -f html -o report.html --open
 | `git` | Secrets buried in commit history (deleting the file does not rotate the key), tracked `.env`/`.pem`/keystores, credentials in the remote URL, `.gitignore` gaps. |
 | `surface` | Live domain: TLS validity + expiry, HSTS/CSP/nosniff/frame-options, cookie flags, HTTP→HTTPS redirect, version-disclosure headers, and publicly served `/.env`, `/.git/config`, `/actuator/env`. |
 | `licenses` | Every dependency's license resolved from npm/PyPI, classified into permissive, file-level copyleft (MPL/LGPL), strong copyleft (GPL), and network copyleft (AGPL/SSPL) — with a license inventory for your diligence folder. |
-| `readiness` | An 18-point **startup security-readiness score** modelled on what SOC 2 auditors and enterprise security questionnaires actually ask for — lockfiles, Dependabot, CI, tests, secret scanning, SAST, CODEOWNERS, SECURITY.md, IaC, observability, incident response, backups, privacy. |
+| `readiness` | An 18-check, 80-point **startup security-readiness score** (reported as a percentage) modelled on what SOC 2 auditors and enterprise security questionnaires actually ask for — lockfiles, Dependabot, CI, tests, secret scanning, SAST, CODEOWNERS, SECURITY.md, IaC, observability, incident response, backups, privacy. |
 
 Every finding carries a severity, a location, redacted evidence, a concrete remediation, and a CWE/OSV reference.
+
+## Sample output
+
+A real run against a small demo project with a hardcoded Stripe key, string-concatenated SQL,
+disabled TLS verification, a root Docker user, and an outdated `lodash`:
+
+```
+╔══════════════════════════════════════════════════════════════════════════╗
+║                                   DIRA                                   ║
+║                    درع · security audit for startups                     ║
+╚══════════════════════════════════════════════════════════════════════════╝
+
+  Target  /tmp/demo
+
+  SECURITY GRADE   F   risk 100/100
+  STARTUP READINESS 18%  Pre-security  (14/80 pts)
+
+  CRITICAL 2  HIGH 5  MEDIUM 8  LOW 9  INFO 5
+
+  ─── CRITICAL ──────────────────────────────────────────────────────────
+  ● lodash 4.17.11 — CVE-2019-10744: Prototype Pollution in lodash
+      package-lock.json  npm:lodash@4.17.11
+      → Upgrade lodash to 4.17.12 or later.
+
+  ● Stripe secret/restricted key
+      src/app.py:2  sk_l************nZaQ
+      → Revoke the key at the provider, issue a new one, move it to a secret manager, and purge it from git history (git filter-repo / BFG).
+
+  ─── HIGH ──────────────────────────────────────────────────────────────
+  ● SQL built by string concatenation
+      src/app.py:4  execute("SELECT * FROM users WHERE id = " +
+      → Use parameterized queries / bound placeholders.
+
+  ● TLS verification disabled
+      src/app.py:5  verify=False
+      → Never disable certificate verification; pin a CA bundle instead.
+
+  ─── MEDIUM ────────────────────────────────────────────────────────────
+  ● GitHub Action pinned to a mutable ref
+      .github/workflows/ci.yml:6  - uses: actions/checkout@v4
+      → Pin third-party actions to a full commit SHA — tags are mutable and are a live supply-chain risk.
+
+  ● Container runs as root
+      Dockerfile:1  no non-root USER directive
+      → Create an unprivileged user and add `USER app` before CMD/ENTRYPOINT.
+
+  16 files · 1 deps · 1.8s
+```
+
+Note the redaction — `sk_l************nZaQ`. DIRA never writes a full credential into a report,
+so the HTML and SARIF output are safe to share with a customer or attach to a ticket.
 
 ## Install
 
 ```bash
 # from source (available now)
-pipx install git+https://github.com/Yusuf-Gadelrab/dira@v1.1.0
-uvx --from git+https://github.com/Yusuf-Gadelrab/dira@v1.1.0 dira scan .
-pip install git+https://github.com/Yusuf-Gadelrab/dira@v1.1.0
+pipx install git+https://github.com/Yusuf-Gadelrab/dira@v1.2.0
+uvx --from git+https://github.com/Yusuf-Gadelrab/dira@v1.2.0 dira scan .
+pip install git+https://github.com/Yusuf-Gadelrab/dira@v1.2.0
 
 # or grab the wheel from the release
-pipx install https://github.com/Yusuf-Gadelrab/dira/releases/download/v1.1.0/dira_scan-1.1.0-py3-none-any.whl
+pipx install https://github.com/Yusuf-Gadelrab/dira/releases/download/v1.2.0/dira_scan-1.2.0-py3-none-any.whl
 ```
 
 > **Registry status:** the PyPI (`dira-scan`) and npm (`npx dira-scan`) packages are built and
@@ -79,7 +130,7 @@ straight into CI. `--fail-on never` always exits `0`.
 ### GitHub Actions
 
 ```yaml
-- uses: Yusuf-Gadelrab/dira@v1     # moving tag, currently v1.1.0
+- uses: Yusuf-Gadelrab/dira@v1     # moving tag, currently v1.2.0
   with:
     fail-on: high
     target: yourapp.com
@@ -92,7 +143,7 @@ Or use the SARIF path so findings land in the Security tab — `dira init` write
 ```yaml
 repos:
   - repo: https://github.com/Yusuf-Gadelrab/dira
-    rev: v1.1.0
+    rev: v1.2.0
     hooks:
       - id: dira
 ```
@@ -131,7 +182,7 @@ for f in result.findings:
 ## Why it's fast
 
 - **One walk, one regex.** All 20 secret patterns compile into a single alternation, so each file is read once and matched once — not once per rule.
-- **Incremental cache.** `.dira-cache.json` keys results on `(size, mtime, ruleset version)`; an unchanged file is never re-read. Second runs on a large repo are typically 5–10× faster.
+- **Incremental cache.** `.dira-cache.json` keys results on `(size, mtime, ruleset version)`; an unchanged file is never re-read. Measured on a 117-file repo, the file-scanning phase drops from 1.56s to 0.05s on the second run. Note this caches *file* scanning only — git-history scanning is not cached and dominates a full run on a repo with deep history, so use `--only secrets,config` (or `--history 0`) for the fast inner-loop pass.
 - **Parallel by default.** File scanning and OSV detail lookups run on a thread pool sized to your CPU.
 - **Batched network.** Up to 900 packages per OSV request, advisory details fetched concurrently and capped.
 - **Cheap skips.** Vendor/build directories, `.gitignore` entries, binaries, and files >2 MB are excluded before any I/O.

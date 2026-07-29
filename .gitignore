@@ -1,5 +1,14 @@
 .dira-cache.json
 .dira-baseline.json
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa
+.pytest_cache/
 dist/
 build/
 *.egg-info/

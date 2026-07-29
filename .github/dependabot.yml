@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # DIRA has no runtime dependencies, but its own workflows pin third-party
+  # actions to mutable tags. Dependabot is what keeps those refs current.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels: [dependencies, security]
+
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    labels: [dependencies, security]
