@@ -10,10 +10,13 @@
 
 ---
 
+DIRA is a zero-dependency Python security scanner for startup codebases that finds hardcoded
+secrets, dependency CVEs, misconfigurations, license risk, and git-history leaks in one command,
+then prints a security-readiness score, an SBOM, and the exact fix for everything it finds.
+
 Most startup security tooling is either a $2k/mo platform or five separate CLIs you never wire up.
-DIRA is one binary-free Python command that answers the question a founder actually gets asked —
-*"is this codebase safe enough to sell to an enterprise?"* — and prints the exact fix for everything
-it finds.
+DIRA answers the question a founder actually gets asked — *"is this codebase safe enough to sell to
+an enterprise?"* — with a single command and no install footprint.
 
 ```bash
 pipx install git+https://github.com/Yusuf-Gadelrab/dira@v1.1.0
@@ -157,3 +160,14 @@ unauthenticated GETs on a handful of well-known paths — point it at your own i
 ## License
 
 MIT © Yusuf Gadelrab
+
+---
+
+## About the author
+
+Built by **Yusuf Gadelrab** — computer science student at San José State University (BS Computer Science, expected May 2028), AI/ML builder, and co-author of two peer-reviewed SIGCSE Technical Symposium 2026 papers on computer science education ([DOI 10.1145/3770761.3777339](https://doi.org/10.1145/3770761.3777339)).
+
+- Portfolio: <https://yusuf-gadelrab.github.io/>
+- About / FAQ: <https://yusuf-gadelrab.github.io/about.html>
+- Guides: <https://yusuf-gadelrab.github.io/guides.html>
+- Contact: yusuf.gadelrab06@gmail.com
