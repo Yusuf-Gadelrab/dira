@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.2.0 — 2026-07-29
+
+Fixed
+- **False positive: an uncommitted `.env` was reported as a critical breach.** The config
+  scanner matched dangerous filenames on disk and never consulted git, so the ordinary
+  developer habit of keeping a local `.env` produced `config/committed-secret-file` at
+  CRITICAL — a finding whose title ("committed to the repo") was simply untrue. It graded a
+  clean repo **F**. The scanner now takes git's index into account: a tracked file still
+  reports critical, while an untracked one reports the honest, actionable
+  `config/untracked-secret-file` at medium ("present and not ignored — one `git add` from
+  being committed"). Targets that are not git repos are unchanged, since there is no index
+  to check against.
+- **False negative: manifests without a lockfile were silently skipped.** Only lockfiles were
+  parsed, so a `package.json` with no `package-lock.json` produced `0 deps` and a clean CVE
+  result — "not checked" was indistinguishable from "checked and safe". New
+  `deps/unresolved-manifest` finding names the manifest, counts its declared dependencies,
+  and states which ecosystem went unscanned. Covers `package.json`, `pyproject.toml`,
+  `Gemfile`, and `Cargo.toml`; silent once a lockfile is present.
+- `config/committed-secret-file` now reports at line 0, so it deduplicates against the git
+  scanner's `git/tracked-secret-file` instead of double-reporting the same file.
+- `.pre-commit-config.yaml` referenced `rev: v1.0.0`, a tag that was never created.
+
 ## 1.1.0 — 2026-07-29
 
 Added

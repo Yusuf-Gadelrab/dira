@@ -3,7 +3,7 @@
 // runner (already-installed module, uvx, or pipx) and hands off to it.
 const { spawnSync } = require("node:child_process");
 
-const PKG = "dira-scan==1.1.0";
+const PKG = "dira-scan==1.2.0";
 const args = process.argv.slice(2);
 
 const CANDIDATES = [

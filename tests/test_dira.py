@@ -497,3 +497,78 @@ def test_git_history_attributes_path_and_downgrades_fixtures(tmp_path):
 
     if "git-history/db-url" in by_id:
         assert by_id["git-history/db-url"].severity == "medium"  # fixture, downgraded
+
+
+def test_untracked_env_is_not_a_committed_secret(tmp_path):
+    """Regression: a local, never-committed .env was reported as
+    `config/committed-secret-file` at CRITICAL because the config scanner matched on
+    filename alone and never consulted git. That graded ordinary repos an F."""
+    def git(*a):
+        subprocess.run(["git", "-C", str(tmp_path), *a], check=True, capture_output=True,
+                       env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin:/usr/local/bin"})
+    try:
+        git("init", "-q", "-b", "main")
+    except Exception:
+        pytest.skip("git unavailable")
+    git("config", "user.email", "t@t.t")
+    git("config", "user.name", "t")
+
+    (tmp_path / "app.py").write_text("x = 1\n")
+    git("add", "-A")
+    git("commit", "-qm", "init")
+    (tmp_path / ".env").write_text("SECRET_KEY=abc\n")   # on disk, never committed
+
+    r = scan(tmp_path, offline=True, enabled=["config", "git"], use_cache=False)
+    ids = _ids(r.findings)
+    assert "config/committed-secret-file" not in ids
+    assert "git/tracked-secret-file" not in ids
+    warn = [f for f in r.findings if f.id == "config/untracked-secret-file"]
+    assert warn, "an unignored .env should still be flagged, just not as a breach"
+    assert warn[0].severity == "medium"
+
+
+def test_tracked_env_is_still_critical(tmp_path):
+    """The downgrade must not blunt the real case: a committed .env stays critical."""
+    def git(*a):
+        subprocess.run(["git", "-C", str(tmp_path), *a], check=True, capture_output=True,
+                       env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin:/usr/local/bin"})
+    try:
+        git("init", "-q", "-b", "main")
+    except Exception:
+        pytest.skip("git unavailable")
+    git("config", "user.email", "t@t.t")
+    git("config", "user.name", "t")
+
+    (tmp_path / ".env").write_text("SECRET_KEY=abc\n")
+    git("add", "-A", "-f")
+    git("commit", "-qm", "oops")
+
+    r = scan(tmp_path, offline=True, enabled=["config", "git"], use_cache=False)
+    crit = [f for f in r.findings if f.id == "config/committed-secret-file"]
+    assert crit and crit[0].severity == "critical"
+    assert "config/untracked-secret-file" not in _ids(r.findings)
+
+
+def test_non_git_target_still_reports_dangerous_files(tmp_path):
+    """With no git index there is nothing to check against — stay loud rather than silent."""
+    (tmp_path / ".env").write_text("SECRET_KEY=abc\n")
+    r = scan(tmp_path, offline=True, enabled=["config"], use_cache=False)
+    crit = [f for f in r.findings if f.id == "config/committed-secret-file"]
+    assert crit and crit[0].severity == "critical"
+
+
+def test_manifest_without_lockfile_is_reported_not_silently_skipped(tmp_path):
+    """Regression: a package.json with no lockfile yielded `0 deps` and a clean CVE
+    result, so 'not checked' was indistinguishable from 'checked and safe'."""
+    (tmp_path / "package.json").write_text(json.dumps({
+        "name": "app", "dependencies": {"react": "^19.0.0", "lodash": "^4.17.20"},
+        "devDependencies": {"vite": "^5.0.0"}}))
+    r = scan(tmp_path, offline=True, enabled=["deps"], use_cache=False)
+    hits = [f for f in r.findings if f.id == "deps/unresolved-manifest"]
+    assert hits, "unlocked manifest not reported"
+    assert "3 declared dependencies" in hits[0].title
+    assert hits[0].severity == "medium"
+
+    (tmp_path / "package-lock.json").write_text('{"lockfileVersion":3,"packages":{}}')
+    r2 = scan(tmp_path, offline=True, enabled=["deps"], use_cache=False)
+    assert "deps/unresolved-manifest" not in _ids(r2.findings), "lockfile present — must go quiet"

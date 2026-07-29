@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 import re
 
-RULESET_VERSION = "1.2.0"
+RULESET_VERSION = "1.3.0"
 
 
 class SecretRule:

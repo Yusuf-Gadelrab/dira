@@ -59,7 +59,7 @@ def _matches(rel: str, name: str, glob: str) -> bool:
 DOWNGRADE = {"critical": "medium", "high": "low", "medium": "low", "low": "info"}
 
 
-def scan_file(path: Path, rel: str) -> list[Finding]:
+def scan_file(path: Path, rel: str, tracked: set[str] | None = None) -> list[Finding]:
     out: list[Finding] = []
     name = path.name
     # A deliberately-vulnerable fixture is not a production incident. Report it, rank it lower.
@@ -69,12 +69,25 @@ def scan_file(path: Path, rel: str) -> list[Finding]:
         if fnmatch.fnmatch(name, pat) if "*" in pat else name == pat:
             if any(x in name for x in ("example", "sample", "template")):
                 break
-            out.append(Finding(
-                id="config/committed-secret-file", title=why, severity=sev,
-                scanner=NAME, path=rel, line=1, evidence=name,
-                remediation="Add it to .gitignore, remove it from the index (`git rm --cached`), "
-                            "purge it from history, and rotate everything it contained.",
-                reference="https://cwe.mitre.org/data/definitions/540.html"))
+            # Only git can say whether the file was actually committed. Every developer has a
+            # local untracked .env; calling that a critical breach is the fastest way to get
+            # a scanner uninstalled. `tracked` is None when the target is not a git repo.
+            if tracked is not None and rel not in tracked:
+                out.append(Finding(
+                    id="config/untracked-secret-file",
+                    title=f"`{name}` is present and not ignored — one `git add` from being committed",
+                    severity=DOWNGRADE.get(sev, "low"),
+                    scanner=NAME, path=rel, line=0, evidence=name,
+                    remediation=f"Add `{name}` to .gitignore now. It is not in git yet, so this is "
+                                "a near miss rather than an incident — no rotation needed.",
+                    reference="https://cwe.mitre.org/data/definitions/540.html"))
+            else:
+                out.append(Finding(
+                    id="config/committed-secret-file", title=why, severity=sev,
+                    scanner=NAME, path=rel, line=0, evidence=name,
+                    remediation="Add it to .gitignore, remove it from the index (`git rm --cached`), "
+                                "purge it from history, and rotate everything it contained.",
+                    reference="https://cwe.mitre.org/data/definitions/540.html"))
             break
 
     suffix = path.suffix.lower()

@@ -20,12 +20,18 @@ def _git(root: Path, *args: str, timeout: int = 25) -> str:
         return ""
 
 
+def tracked_files(root: Path) -> set[str]:
+    """Paths git actually has in the index. Shared with the config scanner so a local,
+    uncommitted .env is never reported as a committed secret."""
+    return set(_git(root, "ls-files").splitlines())
+
+
 def scan(root: Path, history_commits: int = 200) -> list[Finding]:
     if not (root / ".git").exists():
         return []
     out: list[Finding] = []
 
-    tracked = set(_git(root, "ls-files").splitlines())
+    tracked = tracked_files(root)
 
     gitignore = root / ".gitignore"
     ig_text = gitignore.read_text(errors="replace") if gitignore.is_file() else ""

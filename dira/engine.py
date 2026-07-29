@@ -52,6 +52,10 @@ def scan(root: Path, *, enabled: list[str] | None = None, target: str | None = N
     want_secrets = "secrets" in enabled
     want_config = "config" in enabled
 
+    # None when this is not a git repo — the config scanner must not claim a file was
+    # "committed" when there is no index to check it against.
+    tracked = git_scanner.tracked_files(root) if (root / ".git").exists() else None
+
     if want_secrets or want_config:
         def work(item):
             p, rel = item
@@ -62,7 +66,7 @@ def scan(root: Path, *, enabled: list[str] | None = None, target: str | None = N
             if want_secrets:
                 found += secrets_scanner.scan_file(p, rel)
             if want_config:
-                found += config_scanner.scan_file(p, rel)
+                found += config_scanner.scan_file(p, rel, tracked)
             return rel, p, found, False
 
         with ThreadPoolExecutor(max_workers=workers) as ex:
@@ -88,6 +92,7 @@ def scan(root: Path, *, enabled: list[str] | None = None, target: str | None = N
     if "deps" in enabled:
         dep_findings, dep_stats = deps_scanner.scan(all_files, offline=offline, workers=workers)
         findings.extend(dep_findings)
+        findings.extend(deps_scanner.unlocked_manifests(all_files))
         stats["deps"] = dep_stats
 
     if "licenses" in enabled and packages:
@@ -117,6 +122,11 @@ def scan(root: Path, *, enabled: list[str] | None = None, target: str | None = N
     return ScanResult(root=str(root), findings=findings, readiness=readiness, stats=stats)
 
 
+class DiffRefError(RuntimeError):
+    """--diff was given a ref git cannot resolve. Never degrade silently: a
+    typo'd base ref in CI would scan almost nothing and report a false green."""
+
+
 def changed_files(root: Path, ref: str) -> set[str]:
     """Files touched since `ref`, plus anything untracked — the PR-gating fast path."""
     import subprocess
@@ -128,6 +138,13 @@ def changed_files(root: Path, ref: str) -> set[str]:
             return r.stdout if r.returncode == 0 else ""
         except (OSError, subprocess.SubprocessError):
             return ""
+
+    if not git("rev-parse", "--is-inside-work-tree").strip():
+        raise DiffRefError(f"--diff {ref}: {root} is not a git repository")
+    if not git("rev-parse", "--verify", "--quiet", f"{ref}^{{commit}}").strip():
+        raise DiffRefError(
+            f"--diff {ref}: git cannot resolve that ref. "
+            "In CI, fetch it first (e.g. actions/checkout with fetch-depth: 0)")
 
     merge_base = git("merge-base", ref, "HEAD").strip()
     base = merge_base or ref

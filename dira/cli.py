@@ -9,7 +9,7 @@ import webbrowser
 from pathlib import Path
 
 from . import __version__
-from .engine import ALL_SCANNERS, scan
+from .engine import ALL_SCANNERS, DiffRefError, scan
 from .report import html as html_report
 from .report import serial
 from .report import terminal
@@ -95,11 +95,15 @@ def cmd_scan(a) -> int:
     if a.offline:
         enabled = [s for s in enabled if s != "surface"]  # deps still runs, minus the OSV call
 
-    result = scan(
-        root, enabled=enabled, target=a.target, offline=a.offline,
-        use_cache=not a.no_cache, workers=a.workers, history_commits=a.history,
-        probe=not a.no_probe, diff_ref=a.diff,
-        baseline=_load_baseline(Path(a.baseline) if a.baseline else None))
+    try:
+        result = scan(
+            root, enabled=enabled, target=a.target, offline=a.offline,
+            use_cache=not a.no_cache, workers=a.workers, history_commits=a.history,
+            probe=not a.no_probe, diff_ref=a.diff,
+            baseline=_load_baseline(Path(a.baseline) if a.baseline else None))
+    except DiffRefError as e:
+        print(f"dira: {e}", file=sys.stderr)
+        return 2
 
     if a.format == "json":
         body = serial.to_json(result)
@@ -247,7 +251,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - run: pip install git+https://github.com/Yusuf-Gadelrab/dira@v1.1.0
+      - run: pip install git+https://github.com/Yusuf-Gadelrab/dira@v1.2.0
 
       # PRs: only what changed, so the gate stays fast.
       - name: Scan changed files

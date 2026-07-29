@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "dira-scan"
-version = "1.1.0"
+version = "1.2.0"
 description = "DIRA — zero-dependency security audit for startup codebases: secrets, dependency CVEs, misconfigurations, git-history leaks, live surface checks, and a startup security-readiness score."
 readme = "README.md"
 requires-python = ">=3.9"
@@ -45,7 +45,16 @@ dev = ["pytest>=7"]
 packages = ["dira"]
 
 [tool.hatch.build.targets.sdist]
-include = ["dira", "tests", "README.md", "LICENSE", "action.yml", ".pre-commit-hooks.yaml"]
+include = [
+    "/dira",
+    "/tests",
+    "/README.md",
+    "/CHANGELOG.md",
+    "/SECURITY.md",
+    "/LICENSE",
+    "/action.yml",
+    "/.pre-commit-hooks.yaml",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

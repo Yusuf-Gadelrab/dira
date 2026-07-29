@@ -136,6 +136,59 @@ PARSERS = {
 }
 
 
+# Declared-dependency manifests. These carry version *ranges*, not resolved versions, so
+# they cannot be matched against OSV — but their presence without a sibling lockfile means
+# CVE scanning silently covered nothing, which must never be reported as a clean result.
+UNRESOLVED_MANIFESTS = {
+    "package.json": ({"package-lock.json", "yarn.lock", "pnpm-lock.yaml", "npm-shrinkwrap.json"}, "npm"),
+    "pyproject.toml": ({"uv.lock", "poetry.lock", "pdm.lock", "requirements.txt"}, "PyPI"),
+    "Gemfile": ({"Gemfile.lock"}, "RubyGems"),
+    "Cargo.toml": ({"Cargo.lock"}, "crates.io"),
+}
+
+
+def _declared_count(name: str, text: str) -> int:
+    try:
+        if name == "package.json":
+            data = json.loads(text)
+            return sum(len(data.get(k) or {})
+                       for k in ("dependencies", "devDependencies", "optionalDependencies"))
+        if name == "pyproject.toml":
+            return len(re.findall(r"(?m)^\s*[\"']?[A-Za-z0-9][\w.\-]*[\"']?\s*[=><~^]", text))
+    except (ValueError, TypeError):
+        pass
+    return 0
+
+
+def unlocked_manifests(files: list[tuple[Path, str]]) -> list[Finding]:
+    """Flag manifests whose dependencies were never resolved, so the user knows the
+    zero-CVE result for that ecosystem is 'not checked', not 'checked and clean'."""
+    out: list[Finding] = []
+    for path, rel in files:
+        entry = UNRESOLVED_MANIFESTS.get(path.name)
+        if not entry:
+            continue
+        locks, eco = entry
+        if any((path.parent / lock).is_file() for lock in locks):
+            continue
+        text = read_text(path)
+        if not text:
+            continue
+        n = _declared_count(path.name, text)
+        if path.name == "package.json" and n == 0:
+            continue
+        count = f"{n} declared dependencies" if n else "declared dependencies"
+        out.append(Finding(
+            id="deps/unresolved-manifest",
+            title=f"{path.name} has {count} but no lockfile — CVE scan skipped for {eco}",
+            severity="medium", scanner=NAME, path=rel, line=0, evidence=path.name,
+            remediation=f"Commit a lockfile ({' / '.join(sorted(locks))}). Without resolved "
+                        "versions these packages cannot be matched against OSV, so a clean "
+                        "report for this ecosystem means unchecked, not safe.",
+            reference="https://cwe.mitre.org/data/definitions/1104.html"))
+    return out
+
+
 def collect_packages(files: list[tuple[Path, str]]) -> tuple[list[tuple[str, str, str]], list[str]]:
     pkgs: set[tuple[str, str, str]] = set()
     manifests: list[str] = []
