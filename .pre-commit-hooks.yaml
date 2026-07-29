@@ -1,0 +1,7 @@
+- id: dira
+  name: dira security scan
+  description: Block commits containing secrets, misconfigurations, or committed credential files.
+  entry: dira scan --offline --only secrets,config --fail-on high
+  language: python
+  pass_filenames: false
+  always_run: true

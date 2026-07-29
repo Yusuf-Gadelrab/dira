@@ -1,0 +1,43 @@
+name: dira security scan
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '0 12 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  dira:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # This repo IS dira — scan with the working tree, not the published package.
+      - run: pip install .
+
+      - name: Scan
+        run: dira scan . --format sarif --output dira.sarif --fail-on critical
+
+      - name: Upload to code scanning
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: dira.sarif
+
+      - name: Generate SBOM
+        run: dira sbom . --format cyclonedx --output sbom.cdx.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.cdx.json

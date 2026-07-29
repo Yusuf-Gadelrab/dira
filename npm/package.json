@@ -1,0 +1,14 @@
+{
+  "name": "dira-scan",
+  "version": "1.1.0",
+  "description": "DIRA — zero-dependency security audit for startup codebases: secrets, dependency CVEs, misconfigurations, git-history leaks, live surface checks, and a startup security-readiness score.",
+  "bin": { "dira": "bin/dira.js", "dira-scan": "bin/dira.js" },
+  "files": ["bin", "README.md"],
+  "keywords": ["security", "secrets", "secret-scanning", "sast", "vulnerability", "osv", "sarif", "devsecops", "soc2", "audit", "startup", "supply-chain"],
+  "repository": { "type": "git", "url": "git+https://github.com/Yusuf-Gadelrab/dira.git" },
+  "homepage": "https://github.com/Yusuf-Gadelrab/dira#readme",
+  "bugs": { "url": "https://github.com/Yusuf-Gadelrab/dira/issues" },
+  "author": "Yusuf Gadelrab",
+  "license": "MIT",
+  "engines": { "node": ">=16" }
+}

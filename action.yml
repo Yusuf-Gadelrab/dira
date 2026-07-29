@@ -1,0 +1,40 @@
+name: 'DIRA security scan'
+description: 'Scan a startup codebase for secrets, dependency CVEs, misconfigurations, and security readiness.'
+author: 'Yusuf Gadelrab'
+branding:
+  icon: shield
+  color: yellow
+inputs:
+  path:
+    description: 'Directory to scan'
+    default: '.'
+  target:
+    description: 'Optional live domain to audit (headers, TLS, exposed paths)'
+    default: ''
+  fail-on:
+    description: 'Fail the job at/above this severity (critical|high|medium|low|info|never)'
+    default: 'high'
+  format:
+    description: 'Report format (sarif|json|markdown|html|terminal)'
+    default: 'sarif'
+  output:
+    description: 'Report output path'
+    default: 'dira.sarif'
+  baseline:
+    description: 'Path to a dira baseline file'
+    default: ''
+outputs:
+  report:
+    description: 'Path to the generated report'
+    value: ${{ inputs.output }}
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: pip install --quiet "dira-scan==1.1.0"
+    - shell: bash
+      run: |
+        args=("${{ inputs.path }}" --format "${{ inputs.format }}" --output "${{ inputs.output }}" --fail-on "${{ inputs.fail-on }}")
+        [ -n "${{ inputs.target }}" ] && args+=(--target "${{ inputs.target }}")
+        [ -n "${{ inputs.baseline }}" ] && args+=(--baseline "${{ inputs.baseline }}")
+        dira scan "${args[@]}"

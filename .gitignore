@@ -1,0 +1,10 @@
+.dira-cache.json
+.dira-baseline.json
+dist/
+build/
+*.egg-info/
+__pycache__/
+.venv/
+node_modules/
+*.sarif
+report.html
