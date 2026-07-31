@@ -1,12 +1,11 @@
 # DIRA publish runbook
 
-> ## 🛑 HELD until written scope confirmation + Yusuf's go
-> Nothing below may be executed — no `uv publish` / `twine upload`, no `npm publish`,
-> no pre-commit registry PR, no GitHub Marketplace listing, no new account, no tag push —
-> until (1) a **written** scope confirmation from counsel is on file, and (2) Yusuf gives an
-> explicit go-ahead referencing this file. Build, test, and stage freely — that part is
-> always allowed. This banner supersedes any "ready to ship" tone in the rest of this
-> document or in `PUBLISH.md`.
+> ## 🛑 NOT YET RELEASED
+> Nothing below has been executed — no `uv publish` / `twine upload`, no `npm publish`,
+> no pre-commit registry PR, no GitHub Marketplace listing, no tag push. The maintainer
+> runs this sequence deliberately, once, when the release is called. Build, test, and
+> stage freely — that part is always allowed. This banner supersedes any "ready to ship"
+> tone in the rest of this document or in `PUBLISH.md`.
 
 Everything in this file is a **command reference**, not an instruction to run now. Treat it
 as the exact sequence to execute the day the hold lifts.
