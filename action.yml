@@ -23,6 +23,18 @@ inputs:
   baseline:
     description: 'Path to a dira baseline file'
     default: ''
+  diff:
+    description: 'Only scan files changed since this ref (e.g. origin/main) — the fast PR gate. Requires actions/checkout with fetch-depth: 0.'
+    default: ''
+  only:
+    description: 'Comma-separated scanners to run (secrets,config,deps,licenses,git,readiness,surface)'
+    default: ''
+  skip:
+    description: 'Comma-separated scanners to disable'
+    default: ''
+  offline:
+    description: 'Set to "true" to run with no network (skips OSV and live-surface checks)'
+    default: ''
 outputs:
   report:
     description: 'Path to the generated report'
@@ -32,9 +44,28 @@ runs:
   steps:
     - shell: bash
       run: pip install --quiet "git+https://github.com/Yusuf-Gadelrab/dira@v1.2.0"
+    # Inputs are passed through `env:` rather than interpolated into the script body.
+    # `${{ inputs.x }}` inside a run block is substituted before bash ever sees it, so a
+    # crafted input becomes shell code — the exact class this action's own
+    # `ci-script-injection` rule exists to flag. Not shipping it in our own action.
     - shell: bash
+      env:
+        DIRA_PATH: ${{ inputs.path }}
+        DIRA_FORMAT: ${{ inputs.format }}
+        DIRA_OUTPUT: ${{ inputs.output }}
+        DIRA_FAIL_ON: ${{ inputs.fail-on }}
+        DIRA_TARGET: ${{ inputs.target }}
+        DIRA_BASELINE: ${{ inputs.baseline }}
+        DIRA_DIFF: ${{ inputs.diff }}
+        DIRA_ONLY: ${{ inputs.only }}
+        DIRA_SKIP: ${{ inputs.skip }}
+        DIRA_OFFLINE: ${{ inputs.offline }}
       run: |
-        args=("${{ inputs.path }}" --format "${{ inputs.format }}" --output "${{ inputs.output }}" --fail-on "${{ inputs.fail-on }}")
-        [ -n "${{ inputs.target }}" ] && args+=(--target "${{ inputs.target }}")
-        [ -n "${{ inputs.baseline }}" ] && args+=(--baseline "${{ inputs.baseline }}")
+        args=("$DIRA_PATH" --format "$DIRA_FORMAT" --output "$DIRA_OUTPUT" --fail-on "$DIRA_FAIL_ON")
+        if [ -n "$DIRA_TARGET" ]; then args+=(--target "$DIRA_TARGET"); fi
+        if [ -n "$DIRA_BASELINE" ]; then args+=(--baseline "$DIRA_BASELINE"); fi
+        if [ -n "$DIRA_DIFF" ]; then args+=(--diff "$DIRA_DIFF"); fi
+        if [ -n "$DIRA_ONLY" ]; then args+=(--only "$DIRA_ONLY"); fi
+        if [ -n "$DIRA_SKIP" ]; then args+=(--skip "$DIRA_SKIP"); fi
+        if [ "$DIRA_OFFLINE" = "true" ]; then args+=(--offline); fi
         dira scan "${args[@]}"

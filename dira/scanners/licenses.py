@@ -54,6 +54,54 @@ def classify(license_id: str) -> tuple[str, str, str] | None:
             f"License `{license_id}` was not recognised — check it manually before shipping.")
 
 
+GROUP_THRESHOLD = 3
+
+
+def _family_key(name: str) -> str:
+    """Collapse the platform-variant fan-out (`@img/sharp-libvips-linux-arm64`,
+    `-darwin-x64`, …) onto the one logical dependency they all belong to."""
+    base = name.split("/")[-1]
+    parts = base.split("-")
+    return f"{name.split('/')[0]}/{parts[0]}" if name.startswith("@") else parts[0]
+
+
+def _group(hits, manifest: str) -> list[Finding]:
+    """One obligation reported once.
+
+    A single dependency published as fifteen per-platform binaries is one licensing
+    decision, not fifteen findings — and fifteen identical mediums both bury the real
+    issues and inflate the risk score.
+    """
+    buckets: dict[tuple[str, str, str], list] = {}
+    for sev, family, why, name, version, evidence in hits:
+        lic = evidence.split("—", 1)[-1].strip()
+        buckets.setdefault((family, lic, _family_key(name)), []).append(
+            (sev, why, name, version, evidence))
+
+    out: list[Finding] = []
+    for (family, lic, _key), members in sorted(buckets.items()):
+        sev, why, name, version, evidence = members[0]
+        fid = f"license/{family.replace(' ', '-')}"
+        if len(members) < GROUP_THRESHOLD:
+            for s, w, n, v, ev in members:
+                out.append(Finding(
+                    id=fid, title=f"{n} {v} is {lic} ({family})", severity=s,
+                    scanner=NAME, path=manifest, line=0, evidence=ev,
+                    remediation=w, reference="https://spdx.org/licenses/"))
+            continue
+        names = ", ".join(sorted(n for _s, _w, n, _v, _e in members)[:6])
+        more = f" (+{len(members) - 6} more)" if len(members) > 6 else ""
+        out.append(Finding(
+            id=fid,
+            title=f"{len(members)} packages are {lic} ({family})",
+            severity=sev, scanner=NAME, path=manifest, line=0,
+            evidence=f"{names}{more}",
+            remediation=why + " These are platform/variant builds of one dependency — "
+                              "review the obligation once, not per artifact.",
+            reference="https://spdx.org/licenses/"))
+    return out
+
+
 def _get(url: str, timeout: float) -> dict:
     req = urllib.request.Request(url, headers={"User-Agent": "dira-scan"})
     with urllib.request.urlopen(req, timeout=timeout) as r:
@@ -104,8 +152,8 @@ def scan(packages: list[tuple[str, str, str]], manifest: str = "",
         except (urllib.error.URLError, OSError, ValueError, TimeoutError):
             return pkg, None  # unreachable != unlicensed; stay silent
 
-    findings: list[Finding] = []
     inventory: dict[str, int] = {}
+    hits: list[tuple[str, str, str, str, str, str]] = []  # sev, family, why, name, version, eco+lic
     with ThreadPoolExecutor(max_workers=workers) as ex:
         for (name, version, eco), lic in ex.map(fetch, targets):
             if lic is None:
@@ -117,14 +165,9 @@ def scan(packages: list[tuple[str, str, str]], manifest: str = "",
             if not verdict:
                 continue
             sev, family, why = verdict
-            findings.append(Finding(
-                id=f"license/{family.replace(' ', '-')}",
-                title=f"{name} {version} is {lic or 'unlicensed'} ({family})",
-                severity=sev, scanner=NAME, path=manifest, line=0,
-                evidence=f"{eco}:{name}@{version} — {lic or 'no license'}",
-                remediation=why,
-                reference="https://spdx.org/licenses/"))
+            hits.append((sev, family, why, name, version, f"{eco}:{name}@{version} — {lic or 'no license'}"))
 
+    findings = _group(hits, manifest)
     stats["inventory"] = dict(sorted(inventory.items(), key=lambda kv: -kv[1])[:25])
     if len(packages) > MAX_LOOKUPS:
         stats["truncated"] = f"licenses resolved for the first {MAX_LOOKUPS} packages"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 
@@ -9,6 +10,29 @@ from ..core import Finding, redact
 from ..rules import DANGEROUS_FILES, TEST_PATH_RE, is_placeholder, scan_secrets
 
 NAME = "git"
+
+JS_MARKERS = ("package.json", "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
+              "bun.lock", "bun.lockb")
+
+
+KEY_EXT = (".pem", ".key", ".p12", ".pfx", ".keystore", ".jks", ".crt")
+_KEY_SCAN_LIMIT = 4000  # bounded: never turn a hygiene hint into a full-tree walk
+
+
+def _has_key_material(root: Path) -> bool:
+    """Bounded look for untracked key material, skipping vendor trees."""
+    seen = 0
+    skip = {"node_modules", ".git", "vendor", "dist", "build", ".venv", "venv",
+            "site-packages", "target", ".next"}
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = [d for d in dirnames if d not in skip]
+        for fn in filenames:
+            seen += 1
+            if seen > _KEY_SCAN_LIMIT:
+                return False
+            if fn.endswith(KEY_EXT):
+                return True
+    return False
 
 
 def _git(root: Path, *args: str, timeout: int = 25) -> str:
@@ -41,7 +65,17 @@ def scan(root: Path, history_commits: int = 200) -> list[Finding]:
             severity="medium", scanner=NAME, path=".gitignore", line=0, evidence="",
             remediation="Add a .gitignore covering .env*, credentials, keys, build output, and local state."))
     else:
-        for needle in (".env", "*.pem", "node_modules"):
+        # Recommending a node_modules ignore on a repo with no JS anywhere in it is the
+        # kind of context-blind advice that makes a scanner feel like noise — only ask
+        # for it when there is actually a JS package manifest tracked in the repo.
+        has_js = any(f.rsplit("/", 1)[-1] in JS_MARKERS for f in tracked)
+        # Only ask for a `*.pem` ignore when the repo has key material to protect.
+        # Demanding it from a repo that has never contained a certificate is exactly the
+        # context-blind advice that gets a scanner muted.
+        has_keys = any(f.endswith(KEY_EXT) for f in tracked) or _has_key_material(root)
+        needles = (".env",) + (("*.pem",) if has_keys else ()) \
+            + (("node_modules",) if has_js else ())
+        for needle in needles:
             if needle not in ig_text:
                 out.append(Finding(
                     id="git/gitignore-gap", title=f".gitignore does not cover `{needle}`",

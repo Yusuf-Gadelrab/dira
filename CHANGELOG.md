@@ -1,5 +1,75 @@
 # Changelog
 
+## Unreleased — precision pass (ruleset 1.5.0)
+
+Measured by running the scanner over four real repositories and a hostile fixture tree,
+then hand-triaging every finding. Findings on those repositories dropped from 169 to 84
+with no loss of true positives, and two silent false negatives were recovered.
+
+Fixed
+- **`deps/possible-typosquat` had a 100% false-positive rate.** It ran edit-distance ≤ 2
+  over the entire resolved lockfile, so every legitimate transitive package that rhymed
+  with a famous one was flagged (`defu`~`debug`, `jiti`~`vite`, `numba`~`numpy`,
+  `pyotp`~`pytz`, `jsesc`~`jest` — 17 hits, 17 wrong). A typosquat is delivered by *your*
+  typo, so it can only appear in a manifest a human wrote. Now restricted to declared
+  dependencies, edit distance exactly 1, with an allowlist of known-legitimate near
+  misses. Skips silently rather than falling back to the lockfile when the declared set
+  is unavailable.
+- **False negative: real credentials containing common words were silently discarded.**
+  The placeholder filter matched `password`, `secret`, `test`, `foo`, and `bar` as
+  substrings anywhere in the value, so `ThisIsALongRealLookingSecret123`,
+  `MyFastestTokenValue99`, and `barbaraDbPassword1` were dropped without ever being
+  reported. Those words now only mean "placeholder" when they are essentially the whole
+  value; unambiguous markers (`changeme`, `your_`, `example`, `xxx`) still match anywhere.
+- **False positives across minified and generated bundles.** A minified file is
+  wall-to-wall high-entropy mangled identifiers, so the entropy-gated generic rule fired
+  on nearly every one, and code rules reported `innerHTML` inside vendored libraries the
+  user cannot fix. Minified/generated artifacts are now detected by name and by line
+  geometry; entropy and code rules skip them. **Precise provider rules still run** — a
+  build-time key compiled into a bundle is exactly the leak worth catching.
+- **One dependency reported up to 12 times.** A package published as per-platform
+  binaries (`@img/sharp-libvips-linux-x64`, `-darwin-arm64`, …) produced one license
+  finding per artifact, burying real issues and inflating the risk score. Platform
+  variants of one dependency now collapse into a single grouped finding.
+- **`.gitignore` `*.pem` gap was reported on repos with no key material.** Now raised
+  only when the repository actually contains certificate or key files, via a bounded
+  walk that skips vendor trees.
+
+Changed
+- **Dev-only dependencies are ranked one level lower and labelled `(dev-only)`.** A
+  prototype-pollution CVE in a bundler plugin and the same CVE in a live request path
+  are not the same finding, and grading a repo `F` on build-tooling advisories is how a
+  scanner gets switched off. Resolved from the npm lockfile `dev` flag, `Pipfile.lock`
+  `develop`, and — since bun.lock carries no flag — graph reachability from the
+  workspace's runtime dependencies. Still reported, with the caveat that a compromised
+  CI build is a real threat model.
+- **GitHub Action pin severity is now tiered.** `actions/checkout@v4` (GitHub-owned) is
+  `low`; a third-party action on a mutable tag stays `medium` and now names the owner and
+  suggests the exact SHA-pinned replacement.
+- `action.yml`: added `diff`, `only`, `skip`, and `offline` passthrough inputs. `--diff`
+  was documented as the PR gate but was not reachable from the action.
+- `action.yml`: inputs are now passed via `env:` instead of being interpolated into the
+  shell body — the exact script-injection class this project's own `ci-script-injection`
+  rule exists to flag.
+- README rule counts corrected (24 secret rules, 38 config rules).
+
+Added
+- Hardening tests for hostile input: files over the size cap, huge single-line files,
+  binaries with text extensions, invalid UTF-8, BOMs, unicode paths, malformed
+  lockfiles, unterminated string literals, 40-level nesting, symlink loops, dangling
+  symlinks, unreadable files, empty directories, and non-git targets. Test count 53 → 68.
+- `dira/licensing.py` and `dira/policy.py` — offline, no-telemetry entitlement scaffolding
+  for a future paid tier. Every capability through v1.2.0 stays free forever
+  (`COMMUNITY_FEATURES` in `licensing.py`); the only gated feature so far is
+  `policy` (per-rule severity overrides and gates via a `--policy` JSON file). Verification
+  is a local HMAC check with no activation server and no call-home — see the module
+  docstring for the honest threat-model writeup. `tests/test_licensing.py` — 30 tests.
+  Suite total 68 → **98 passing**.
+- `VIABILITY.md` — competitive and business assessment.
+- `service/` — the audit-engagement kit (intake, scope skeleton, runbook, remediation
+  library, pricing, and a client-report generator that renders DIRA JSON to HTML).
+- `GO-LIVE.md` and an expanded `launch/` — staged publication runbook and launch copy.
+
 ## 1.2.0 — 2026-07-29
 
 Fixed

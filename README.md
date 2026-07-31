@@ -6,6 +6,12 @@
 
 `secrets` · `dependency CVEs` · `misconfigurations` · `licenses` · `git-history leaks` · `live surface` · `SBOM` · `readiness score`
 
+[![CI](https://github.com/Yusuf-Gadelrab/dira/actions/workflows/tests.yml/badge.svg)](https://github.com/Yusuf-Gadelrab/dira/actions/workflows/tests.yml)
+[![Tests](https://img.shields.io/badge/tests-98%20passing-d4af37)](tests/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-d4af37)](LICENSE)
+[![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-d4af37)](pyproject.toml)
+[![Dependencies: 0](https://img.shields.io/badge/dependencies-0-d4af37)](pyproject.toml)
+
 </div>
 
 ---
@@ -29,8 +35,8 @@ dira scan . -f html -o report.html --open
 
 | Scanner | What it finds |
 |---|---|
-| `secrets` | 20 credential patterns (AWS, Stripe, OpenAI, Anthropic, GitHub, GCP, Slack, npm, DSNs, private keys) plus an entropy-gated generic rule. Values are **redacted** in every report. |
-| `config` | 34 rules across Docker (root user, `:latest`, build-ARG secrets), compose/k8s (`privileged`, hostPath), Terraform (`0.0.0.0/0`, public buckets, unencrypted storage), GitHub Actions (`pull_request_target`, mutable action refs, script injection), cloud (public Firebase rules, `"Principal": "*"`, GCP `allUsers`, `curl \| sh`), frontend (`NEXT_PUBLIC_*` secrets, tokens in localStorage, innerHTML/`dangerouslySetInnerHTML`, wildcard `postMessage`, JWT `none`), LLM apps (`dangerouslyAllowBrowser`, prompt concatenation, model output piped to an executor), and server code (SQLi by concatenation, `shell=True`, wildcard CORS, disabled TLS verification, `eval`/`pickle`, weak password hashing, debug mode on). |
+| `secrets` | 24 credential patterns (AWS, Stripe, OpenAI, Anthropic, GitHub, GCP, Slack, npm, DSNs, private keys) plus an entropy-gated generic rule. Values are **redacted** in every report. |
+| `config` | 38 rules across Docker (root user, `:latest`, build-ARG secrets), compose/k8s (`privileged`, hostPath), Terraform (`0.0.0.0/0`, public buckets, unencrypted storage), GitHub Actions (`pull_request_target`, mutable action refs, script injection), cloud (public Firebase rules, `"Principal": "*"`, GCP `allUsers`, `curl \| sh`), frontend (`NEXT_PUBLIC_*` secrets, tokens in localStorage, innerHTML/`dangerouslySetInnerHTML`, wildcard `postMessage`, JWT `none`), LLM apps (`dangerouslyAllowBrowser`, prompt concatenation, model output piped to an executor), and server code (SQLi by concatenation, `shell=True`, wildcard CORS, disabled TLS verification, `eval`/`pickle`, weak password hashing, debug mode on). |
 | `deps` | Every package in your lockfiles resolved against **OSV.dev** — npm, PyPI, Go, crates.io, RubyGems. Batched, free, no API key, with CVSS-estimated severity and the exact fixed version. |
 | `git` | Secrets buried in commit history (deleting the file does not rotate the key), tracked `.env`/`.pem`/keystores, credentials in the remote URL, `.gitignore` gaps. |
 | `surface` | Live domain: TLS validity + expiry, HSTS/CSP/nosniff/frame-options, cookie flags, HTTP→HTTPS redirect, version-disclosure headers, and publicly served `/.env`, `/.git/config`, `/actuator/env`. |
@@ -38,6 +44,31 @@ dira scan . -f html -o report.html --open
 | `readiness` | An 18-check, 80-point **startup security-readiness score** (reported as a percentage) modelled on what SOC 2 auditors and enterprise security questionnaires actually ask for — lockfiles, Dependabot, CI, tests, secret scanning, SAST, CODEOWNERS, SECURITY.md, IaC, observability, incident response, backups, privacy. |
 
 Every finding carries a severity, a location, redacted evidence, a concrete remediation, and a CWE/OSV reference.
+
+## How this compares
+
+DIRA does five things in one command. Each one has a dedicated tool that does that specific thing
+better. Use both — DIRA isn't trying to replace any of these, and says so on purpose:
+
+| | DIRA | gitleaks | trufflehog | semgrep |
+|---|---|---|---|---|
+| Secret detection | Pattern + entropy, redacted | Pattern-based, more mature ruleset | Pattern **+ live verification** against the provider | Not its focus |
+| Dependency CVEs (OSV.dev) | Yes, 5 ecosystems | No | No | No (Semgrep Supply Chain is a separate paid product) |
+| Config/IaC misconfig | Yes, 38 rules | No | No | Yes — with real dataflow analysis DIRA does not have |
+| Git-history leak scanning | Yes | Yes — this is its whole job, more mature | Yes | No |
+| License risk / SBOM | Yes (CycloneDX + SPDX) | No | No | No |
+| Dataflow / taint analysis | **No** — pattern matching only | No | No | **Yes** — this is semgrep's core strength |
+| Verified (not just matched) secrets | **No** | No | **Yes** | No |
+| Startup-readiness score | Yes, 18 checks / 80 pts | No | No | No |
+| Install | pipx/uvx, **zero dependencies** | single Go binary | single Go binary | pip/brew, has dependencies |
+
+**Honest read:** if secrets are your only concern, gitleaks and trufflehog are more mature at
+exactly that, and trufflehog verifies a key against the live provider — DIRA does not. If you need
+real dataflow analysis, semgrep is a different and deeper tool; DIRA finds *sinks*
+(`innerHTML =`, SQL built by concatenation, `shell=True`), not proven, traced vulnerabilities. What
+DIRA has that none of the three above do: dependency-license risk, an SBOM, and a readiness score
+modeled on what an enterprise security questionnaire actually asks — because most of the time the
+question isn't "what's broken in this file," it's "can we pass procurement."
 
 ## Sample output
 
@@ -181,7 +212,7 @@ for f in result.findings:
 
 ## Why it's fast
 
-- **One walk, one regex.** All 20 secret patterns compile into a single alternation, so each file is read once and matched once — not once per rule.
+- **One walk, two regexes.** The 24 secret patterns compile into a single alternation, so each file is read once rather than matched once per rule. A second pass over the 23 provider-specific patterns runs alongside it, because regex alternation is leftmost-first and would otherwise let the broad generic rule shadow a specific one on the same line (`API_KEY = "sk_live_…"` must report as a Stripe key, not as a generic credential).
 - **Incremental cache.** `.dira-cache.json` keys results on `(size, mtime, ruleset version)`; an unchanged file is never re-read. Measured on a 117-file repo, the file-scanning phase drops from 1.56s to 0.05s on the second run. Note this caches *file* scanning only — git-history scanning is not cached and dominates a full run on a repo with deep history, so use `--only secrets,config` (or `--history 0`) for the fast inner-loop pass.
 - **Parallel by default.** File scanning and OSV detail lookups run on a thread pool sized to your CPU.
 - **Batched network.** Up to 900 packages per OSV request, advisory details fetched concurrently and capped.
@@ -195,7 +226,7 @@ False positives are the reason security tools get uninstalled, so DIRA:
 - ignores placeholders, `os.environ[...]`, `${VAR}`, `changeme`, `xxxx`, and low-entropy values;
 - gates the generic credential rule on Shannon entropy ≥ 3.4;
 - **downgrades** — rather than hides — hits inside `tests/`, `fixtures/`, docs, and `.env.example`;
-- deduplicates overlapping rules on the same line, keeping the highest severity;
+- deduplicates overlapping rules on the same line — when a provider-specific rule names a credential, the generic catch-all is suppressed rather than reported twice;
 - supports `.diraignore` (same syntax as `.gitignore`) and stable per-finding fingerprints, so `dira baseline` suppresses today's debt without hiding tomorrow's regressions.
 
 ## Limits — read these
@@ -207,6 +238,14 @@ repo", not "secure".
 
 Scanning a domain you do not own or have permission to test may be unlawful. `--target` performs
 unauthenticated GETs on a handful of well-known paths — point it at your own infrastructure only.
+
+## Contributing
+
+False positives and false negatives on real repositories are the single most useful thing you can
+report — open an issue with the file/line (redact any real value first). See `CONTRIBUTING.md` for
+the dev setup and ground rules (zero runtime dependencies, no compliance-claim copy, every rule
+needs a false-positive test alongside it), `SECURITY.md` to report a vulnerability in DIRA itself
+(not a public issue), and `CODE_OF_CONDUCT.md` for how the project is run.
 
 ## License
 

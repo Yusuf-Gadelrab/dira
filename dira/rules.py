@@ -6,7 +6,7 @@ from __future__ import annotations
 import math
 import re
 
-RULESET_VERSION = "1.3.0"
+RULESET_VERSION = "1.5.0"
 
 
 class SecretRule:
@@ -42,8 +42,11 @@ SECRET_RULES: list[SecretRule] = [
                r"(https://hooks\.slack\.com/services/T[A-Za-z0-9_/]{20,})", ROTATE),
     SecretRule("stripe-key", "Stripe secret/restricted key", "critical",
                r"\b((?:sk|rk)_(?:live|test)_[A-Za-z0-9]{16,})\b", ROTATE),
+    # Anthropic keys are also "sk-…", so the OpenAI pattern must not swallow them —
+    # alternation is leftmost-first and OpenAI's rule sits earlier in this list, so
+    # without the lookahead every Anthropic key was misreported as an OpenAI key.
     SecretRule("openai-key", "OpenAI API key", "critical",
-               r"\b(sk-(?:proj-|svcacct-)?[A-Za-z0-9_\-]{20,})\b", ROTATE),
+               r"\b(sk-(?!ant-)(?:proj-|svcacct-)?[A-Za-z0-9_\-]{20,})\b", ROTATE),
     SecretRule("anthropic-key", "Anthropic API key", "critical",
                r"\b(sk-ant-[A-Za-z0-9_\-]{20,})\b", ROTATE),
     SecretRule("google-api-key", "Google API key", "high",
@@ -56,6 +59,15 @@ SECRET_RULES: list[SecretRule] = [
                r"\b(npm_[A-Za-z0-9]{36})\b", ROTATE),
     SecretRule("hf-token", "Hugging Face token", "high",
                r"\b(hf_[A-Za-z0-9]{34,})\b", ROTATE),
+    SecretRule("github-fine-grained-pat", "GitHub fine-grained personal access token", "critical",
+               r"\b(github_pat_[A-Za-z0-9_]{82})\b", ROTATE, entropy=3.0),
+    SecretRule("supabase-secret-key", "Supabase secret API key", "critical",
+               r"\b(sb_secret_[A-Za-z0-9_\-]{20,})\b",
+               "This key bypasses Row Level Security. " + ROTATE, entropy=3.0),
+    SecretRule("azure-storage-key", "Azure Storage account key", "critical",
+               r"(?i)AccountKey=([A-Za-z0-9+/]{86}==)", ROTATE),
+    SecretRule("digitalocean-token", "DigitalOcean personal access token", "critical",
+               r"\b(dop_v1_[a-f0-9]{64})\b", ROTATE, entropy=2.5),
     SecretRule("jwt", "Hardcoded JWT", "medium",
                r"\b(eyJ[A-Za-z0-9_\-]{10,}\.eyJ[A-Za-z0-9_\-]{10,}\.[A-Za-z0-9_\-]{10,})\b",
                "If this is a signed session/service token, rotate the signing secret and stop committing tokens."),
@@ -66,16 +78,33 @@ SECRET_RULES: list[SecretRule] = [
                r"\b(https?://[^\s:@/\"']+:[^\s:@/\"']{3,}@[^\s\"'<>]+)",
                "Use a header-based token from a secret store instead of credentials in the URL."),
     SecretRule("generic-secret", "Generic hardcoded credential", "high",
-               r"(?i)\b(?:api[_\-]?key|apikey|secret|passwd|password|pwd|token|client[_\-]?secret|auth[_\-]?token|access[_\-]?token|private[_\-]?key)\b\s*[:=]\s*[\"']([^\"'\s]{12,120})[\"']",
+               r"(?i)\b(?:api[_\-]?key|apikey|secret|passwd|password|pwd|token"
+               r"|(?:client|api|app|shared|signing|webhook)[_\-]?secret"
+               r"|(?:auth|access|refresh|bearer)[_\-]?token|private[_\-]?key)\b"
+               r"\s*[:=]\s*[\"']([^\"'\s]{12,120})[\"']",
                ROTATE, entropy=3.4),
 ]
 
+# Markers that mean "not a real credential" even when embedded in a longer value.
 PLACEHOLDER_RE = re.compile(
     r"^(?:\$|\{\{|<|%|process\.env|os\.environ|env\[|import\.meta|null|none|true|false)"
     r"|\byour[_\-]?\w*|[_\-]here\b|\bhere\b"
-    r"|(?:my[_\-]?|the[_\-]?)?(?:example|sample|placeholder|changeme|change[_\-]?me"
-    r"|dummy|fake|test|foo|bar|redacted|xxx+|todo|insert|replace|abcdef|123456|password"
-    r"|secret|s3cret|not[_\-]?real)",
+    r"|(?:example|sample|placeholder|changeme|change[_\-]?me|redacted|not[_\-]?real"
+    r"|xxx+|todo|abcdef|123456|insert[_\-]?\w*|replace[_\-]?(?:me|this|with|your))",
+    re.IGNORECASE,
+)
+
+# Words that only mean "placeholder" when they ARE the whole value. Matching these as
+# substrings is a silent false-negative machine: `test` lives inside "MyFastestToken",
+# `secret` inside "ProdSecretKey9f2x", `bar` inside "barbaraDbPass" — every one of those
+# is a real credential that a substring rule throws away without ever reporting it.
+WEAK_PLACEHOLDER_RE = re.compile(
+    r"^[\W_]*(?:my[_\-]?|the[_\-]?|a[_\-]?)?"
+    r"(?:password|passwd|pwd|secret|s3cret|token|apikey|api[_\-]?key|key|credential"
+    r"|test|testing|foo|bar|baz|qux|fake|mock|demo|dummy|value|string|somevalue"
+    r"|abc|asdf|qwerty|letmein|hunter)"
+    r"(?:[_\-]?(?:key|secret|token|password|value|here|123))?"
+    r"[\W_]*\d{0,6}[\W_]*$",
     re.IGNORECASE,
 )
 TEST_PATH_RE = re.compile(r"(?i)(^|/)(tests?|__tests__|spec|specs|fixtures?|mocks?|examples?|docs?|samples?)(/|$)")
@@ -89,19 +118,39 @@ def _scoped(pattern: str) -> str:
 _MASTER = re.compile(
     "|".join(f"(?P<{r.group}>{_scoped(r.pattern)})" for r in SECRET_RULES)
 )
+# Alternation is leftmost-first and finditer consumes non-overlapping spans, so a
+# broad rule that starts earlier on the line (`API_KEY = "sk_live_…"`) hides the
+# specific one that would classify the same value as critical. A second pass over
+# the provider-specific rules alone guarantees they are never shadowed.
+_SPECIFIC_RULES = [r for r in SECRET_RULES if r.id != "generic-secret"]
+_MASTER_SPECIFIC = re.compile(
+    "|".join(f"(?P<{r.group}>{_scoped(r.pattern)})" for r in _SPECIFIC_RULES)
+)
 _BY_GROUP = {r.group: r for r in SECRET_RULES}
 
 
+def _rule_for(m) -> "SecretRule | None":
+    rule = _BY_GROUP.get(m.lastgroup)
+    if rule is None:
+        for g, r in _BY_GROUP.items():
+            if m.groupdict().get(g):
+                return r
+    return rule
+
+
 def scan_secrets(text: str):
-    """Yields (rule, match). One regex pass for all rules."""
-    for m in _MASTER.finditer(text):
-        rule = _BY_GROUP[m.lastgroup] if m.lastgroup in _BY_GROUP else None
-        if rule is None:
-            for g, r in _BY_GROUP.items():
-                if m.groupdict().get(g):
-                    rule = r
-                    break
-        if rule:
+    """Yields (rule, match) for every rule that fires, specific rules included even
+    when a broader rule matched an overlapping span."""
+    seen: set[tuple[str, int, int]] = set()
+    for pattern in (_MASTER, _MASTER_SPECIFIC):
+        for m in pattern.finditer(text):
+            rule = _rule_for(m)
+            if not rule:
+                continue
+            key = (rule.id, m.start(), m.end())
+            if key in seen:
+                continue
+            seen.add(key)
             yield rule, m
 
 
@@ -121,9 +170,35 @@ def is_placeholder(value: str) -> bool:
         return True
     if PLACEHOLDER_RE.search(v):
         return True
+    if WEAK_PLACEHOLDER_RE.match(v):
+        return True
     if len(set(v)) <= 3:  # "aaaaaaaaaaaa", "xxxxxxxx"
         return True
     return False
+
+
+# Generated/minified artifacts: one enormous line of mangled identifiers. Entropy-based
+# rules fire constantly on the random-looking symbol names, and code rules (innerHTML,
+# eval) fire on library internals nobody can act on. Precise, fixed-prefix provider
+# rules still run here, because a build-time key baked into a bundle is a real leak.
+MINIFIED_NAME_RE = re.compile(
+    r"(?i)[.\-](?:min|bundle|chunk|pack|vendor|polyfills?|runtime)\.(?:js|mjs|cjs|css)$"
+    r"|\.min\.\w+$|^[a-f0-9]{8,}\.(?:js|css)$")
+MINIFIED_MIN_BYTES = 20_000
+MINIFIED_LINE_LEN = 1_000
+
+
+def is_minified(name: str, text: str) -> bool:
+    if MINIFIED_NAME_RE.search(name):
+        return True
+    if len(text) < MINIFIED_MIN_BYTES:
+        return False
+    lines = text.split("\n", 400)[:400]
+    if not lines:
+        return False
+    longest = max(len(x) for x in lines)
+    avg = sum(len(x) for x in lines) / len(lines)
+    return longest > MINIFIED_LINE_LEN and avg > 200
 
 
 # --- Config / IaC misconfiguration rules -----------------------------------
@@ -207,12 +282,33 @@ CONFIG_RULES = [
      "This puts your provider key in client-side JS where anyone can drain it. "
      "Proxy the call through your own backend and rotate the key."),
     ("llm-prompt-injection", "Untrusted input concatenated into a prompt", "medium", "*",
-     r"(?i)(?:prompt|messages|system)\s*[:=]\s*f?[\"'`][^\"'`]{0,200}\$?\{(?:user|req|input|query|body|params|message|msg|text|content|comment|email)\w*",
-     "Keep untrusted text in a separate user-role message with explicit delimiters, never inside "
-     "the system prompt, and treat model output as untrusted."),
+     r"(?i)(?:prompt|messages|system)\s*[:=]\s*f?[\"'`][^\"'`]{0,200}\$?\{(?:user|req|input|query|body|params|message|msg|text|content|comment|email"
+     r"|context\w*|docs?\b|document\w*|retrieved\w*|chunk\w*|history|search_results?|tool_(?:result|output)\w*)\w*",
+     "Keep untrusted text — including retrieved/RAG context, which is just as attacker-influenceable as "
+     "direct user input — in a separate user-role message with explicit delimiters, never inside the "
+     "system prompt, and treat model output as untrusted."),
     ("llm-unbounded-exec", "Model output passed to an executor", "high", "*",
      r"(?i)(?:exec|eval|subprocess\.\w+|os\.system|child_process\.\w+)\s*\([^)]*(?:completion|response|llm|model|choices\[0\]|message\.content)",
      "Never execute model output directly — constrain it to a whitelisted action schema and validate before dispatch."),
+    ("llm-tool-args-eval", "Tool/function-call arguments passed to eval/exec", "critical", "*",
+     r"(?i)(?:\beval\(|\bexec\(|new\s+Function\()[^)\n]{0,120}(?:tool_call|function_call|\.arguments\b)",
+     "The model chose these arguments — treat them exactly like untrusted user input. Parse them into a "
+     "typed schema and dispatch through an explicit allowlist of functions, never through eval/exec."),
+    ("llm-secret-in-prompt", "Credential-shaped value interpolated into an LLM prompt", "high", "*",
+     r"(?i)(?:prompt|system|messages)\s*[:=]\s*f[\"'`][^\"'`]{0,300}\{[^}]{0,60}"
+     r"(?:api[_\-]?key|apikey|secret|password|token|credential)[^}]{0,60}\}",
+     "Prompts are logged and cached by providers and can be exfiltrated back out via prompt injection — "
+     "call the API with the credential separately, never interpolate it into text sent to the model."),
+    ("llm-output-unsanitized-render", "LLM output rendered into the DOM without sanitization", "high", "*",
+     r"(?i)(?:dangerouslySetInnerHTML\s*=\s*\{\{\s*__html:|\.innerHTML\s*=)\s*[^;\n]{0,80}"
+     r"(?:completion|response\.choices|message\.content|llm[_A-Z]?[Oo]utput|ai[_A-Z]?[Rr]esponse|model[_A-Z]?[Oo]utput|chat[Rr]esponse|bot[Rr]eply|assistant[Mm]essage)",
+     "Model output can carry injected markup from the prompt/training context (indirect prompt injection) — "
+     "sanitize with DOMPurify before rendering, or render as text."),
+    ("llm-unbounded-tokens", "LLM call has no visible token limit", "low", "*",
+     r"(?i)\.(?:chat\.completions|completions|messages)\.create\(\s*"
+     r"(?:(?!max_tokens|maxOutputTokens|max_output_tokens|max_completion_tokens)[\s\S]){0,300}\)",
+     "No max_tokens / max_output_tokens found near this call. An unbounded or looping generation is a "
+     "real cost/DoS vector — set an explicit ceiling, even a generous one, on every completion call."),
 
     # --- cloud / platform --------------------------------------------------
     ("firebase-open-rules", "Firebase rules allow public read/write", "critical", "*",
@@ -238,9 +334,10 @@ CODE_RULE_IDS = {
     "shell-injection", "sql-injection", "eval-use", "public-env-secret",
     "token-in-localstorage", "react-dangerous-html", "dom-innerhtml",
     "postmessage-wildcard", "jwt-none-alg", "llm-browser-key",
-    "llm-prompt-injection", "llm-unbounded-exec", "firebase-open-rules",
-    "iam-wildcard-principal", "iam-wildcard-action", "gcp-allusers",
-    "curl-pipe-shell",
+    "llm-prompt-injection", "llm-unbounded-exec", "llm-tool-args-eval",
+    "llm-secret-in-prompt", "llm-output-unsanitized-render", "llm-unbounded-tokens",
+    "firebase-open-rules", "iam-wildcard-principal", "iam-wildcard-action",
+    "gcp-allusers", "curl-pipe-shell",
 }
 
 # Files that must never be committed.

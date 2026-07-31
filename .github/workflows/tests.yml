@@ -7,8 +7,13 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   pytest:
+    name: pytest (${{ matrix.os }} · py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -16,9 +21,56 @@ jobs:
         os: [ubuntu-latest, macos-latest]
         python: ['3.9', '3.12', '3.13']
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      # Third-party actions are pinned to full commit SHAs — DIRA reports a mutable
+      # action ref as a finding, so this repo has to hold itself to the same rule.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -e ".[dev]"
       - run: pytest -q
+
+  package:
+    name: build · install · run
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: pip install build
+      - run: python -m build
+
+      # The wheel must install with no dependencies at all and expose every entry
+      # point. A packaging break is invisible to pytest, which imports from source.
+      - name: install the wheel into a clean environment
+        run: |
+          python -m venv /tmp/probe
+          /tmp/probe/bin/pip install --quiet dist/*.whl
+          test "$(/tmp/probe/bin/pip list --format=freeze | grep -vc '^pip\|^setuptools\|^wheel')" -eq 1
+      - name: entry points resolve
+        run: |
+          /tmp/probe/bin/dira --version
+          /tmp/probe/bin/dira-scan --version
+          /tmp/probe/bin/python -m dira --version
+      - name: scanning a planted secret still works from the installed package
+        run: |
+          mkdir -p /tmp/probe-target
+          printf 'AWS = "AKIA%s"\n' "QZ7X4NPLMR3TVK9D" > /tmp/probe-target/x.py
+          /tmp/probe/bin/dira scan /tmp/probe-target --offline --fail-on never -f json -o /tmp/out.json
+          python -c "import json,sys; d=json.load(open('/tmp/out.json')); sys.exit(0 if any(f['id']=='secret/aws-access-key' for f in d['findings']) else 1)"
+
+  self-scan:
+    name: dira scans dira
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - run: pip install -e .
+      # Its own test fixtures are deliberate credential look-alikes, so the gate is
+      # set at critical rather than the default high.
+      - run: dira scan . --offline --fail-on critical

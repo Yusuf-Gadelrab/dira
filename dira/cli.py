@@ -9,6 +9,8 @@ import webbrowser
 from pathlib import Path
 
 from . import __version__
+from . import licensing
+from . import policy
 from .engine import ALL_SCANNERS, DiffRefError, scan
 from .report import html as html_report
 from .report import serial
@@ -44,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["critical", "high", "medium", "low", "info", "never"],
                    help="exit 1 when a finding at/above this severity exists (default: high)")
     s.add_argument("--baseline", help="baseline JSON of fingerprints to suppress")
+    s.add_argument("--policy", help="policy-as-code JSON: severity overrides and gates (Pro)")
     s.add_argument("--offline", action="store_true", help="no network (skips OSV + surface checks)")
     s.add_argument("--no-cache", action="store_true")
     s.add_argument("--no-probe", action="store_true", help="skip live path probing on --target")
@@ -59,6 +62,9 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--offline", action="store_true")
 
     sub.add_parser("rules", help="list every detection rule")
+
+    lic = sub.add_parser("license", help="show the installed license and entitlements")
+    lic.add_argument("--key", help="check a specific key instead of the installed one")
 
     sb = sub.add_parser("sbom", help="generate a CycloneDX or SPDX software bill of materials")
     sb.add_argument("path", nargs="?", default=".")
@@ -92,6 +98,18 @@ def cmd_scan(a) -> int:
     if bad:
         print(f"dira: unknown scanner(s): {', '.join(bad)}", file=sys.stderr)
         return 2
+
+    active_policy = None
+    if getattr(a, "policy", None):
+        if licensing.require_pro("policy"):
+            try:
+                active_policy = policy.load(Path(a.policy))
+            except policy.PolicyError as e:
+                print(f"dira: {e}", file=sys.stderr)
+                return 2
+        else:
+            print("dira: continuing with default severities.", file=sys.stderr)
+
     if a.offline:
         enabled = [s for s in enabled if s != "surface"]  # deps still runs, minus the OSV call
 
@@ -104,6 +122,11 @@ def cmd_scan(a) -> int:
     except DiffRefError as e:
         print(f"dira: {e}", file=sys.stderr)
         return 2
+
+    fail_on = a.fail_on
+    if active_policy:
+        result = active_policy.apply(result)
+        fail_on = active_policy.fail_on or fail_on
 
     if a.format == "json":
         body = serial.to_json(result)
@@ -128,10 +151,35 @@ def cmd_scan(a) -> int:
     else:
         print(body)
 
-    if a.fail_on == "never":
+    if fail_on == "never":
         return 0
-    worst = [f for f in result.findings if serial.severity_at_least(f.severity, a.fail_on)]
+    worst = [f for f in result.findings if serial.severity_at_least(f.severity, fail_on)]
     return 1 if worst else 0
+
+
+def cmd_license(a) -> int:
+    supplied = getattr(a, "key", None)
+    lic = licensing.verify_key(supplied) if supplied else licensing.load_license()
+
+    print(f"\n{BANNER}\n")
+    print(f"  TIER        {lic.tier}")
+    if lic.licensee:
+        print(f"  LICENSEE    {lic.licensee}")
+    if lic.issued:
+        print(f"  ISSUED      {lic.issued}")
+    print(f"  EXPIRES     {lic.expires or 'never'}")
+    print(f"  STATUS      {lic.reason}")
+    print(f"\n  ENTITLEMENTS ({len(lic.features)})")
+    for f in sorted(lic.features):
+        print(f"    ✔ {f}")
+    locked = sorted(licensing.PRO_FEATURES - lic.features)
+    if locked:
+        print("\n  LOCKED")
+        for f in locked:
+            print(f"    ✗ {f}")
+        print(f"\n  {licensing.PRO_URL}")
+    print()
+    return 1 if (supplied and not lic.valid) else 0
 
 
 def cmd_sbom(a) -> int:
@@ -318,14 +366,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] not in ("scan", "baseline", "rules", "init", "sbom", "fix",
-                                "-h", "--help", "--version"):
+                                "license", "-h", "--help", "--version"):
         argv.insert(0, "scan")  # `dira .` and `dira ~/proj -t x.com` just work
     if not argv:
         argv = ["scan", "."]
     a = parser.parse_args(argv)
     try:
         return {"scan": cmd_scan, "baseline": cmd_baseline, "rules": cmd_rules,
-                "init": cmd_init, "sbom": cmd_sbom, "fix": cmd_fix}[a.cmd](a)
+                "init": cmd_init, "sbom": cmd_sbom, "fix": cmd_fix,
+                "license": cmd_license}[a.cmd](a)
     except KeyboardInterrupt:
         print("\naborted", file=sys.stderr)
         return 130

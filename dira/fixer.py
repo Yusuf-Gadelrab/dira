@@ -54,7 +54,8 @@ ECOSYSTEM_BLOCK = """  - package-ecosystem: "{eco}"
 
 ECOSYSTEM_BY_FILE = {
     "package.json": "npm", "package-lock.json": "npm", "yarn.lock": "npm",
-    "pnpm-lock.yaml": "npm", "requirements.txt": "pip", "pyproject.toml": "pip",
+    "pnpm-lock.yaml": "npm", "bun.lock": "bun", "bun.lockb": "bun",
+    "requirements.txt": "pip", "pyproject.toml": "pip",
     "Pipfile": "pip", "poetry.lock": "pip", "go.mod": "gomod",
     "Cargo.toml": "cargo", "Gemfile": "bundler", "Dockerfile": "docker",
 }
@@ -107,7 +108,10 @@ class Fix:
 
 def _detect_ecosystems(root: Path) -> list[str]:
     found = []
+    has_bun = (root / "bun.lock").exists() or (root / "bun.lockb").exists()
     for fname, eco in ECOSYSTEM_BY_FILE.items():
+        if eco == "npm" and fname == "package.json" and has_bun:
+            continue  # bun.lock is the real lockfile — don't also propose a bare npm block
         if (root / fname).exists() and eco not in found:
             found.append(eco)
     return found

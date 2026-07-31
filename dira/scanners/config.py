@@ -7,7 +7,8 @@ import re
 from pathlib import Path
 
 from ..core import Finding, line_of, read_text
-from ..rules import CODE_RULE_IDS, CONFIG_RULES, DANGEROUS_FILES, DOC_EXT, TEST_PATH_RE
+from ..rules import (CODE_RULE_IDS, CONFIG_RULES, DANGEROUS_FILES, DOC_EXT,
+                     TEST_PATH_RE, is_minified)
 
 NAME = "config"
 
@@ -40,12 +41,42 @@ CWE = {
     "llm-browser-key": "https://owasp.org/www-project-top-10-for-large-language-model-applications/",
     "llm-prompt-injection": "https://owasp.org/www-project-top-10-for-large-language-model-applications/",
     "llm-unbounded-exec": "https://owasp.org/www-project-top-10-for-large-language-model-applications/",
+    "llm-tool-args-eval": "https://owasp.org/www-project-top-10-for-large-language-model-applications/",
+    "llm-secret-in-prompt": "https://owasp.org/www-project-top-10-for-large-language-model-applications/",
+    "llm-output-unsanitized-render": "https://owasp.org/www-project-top-10-for-large-language-model-applications/",
+    "llm-unbounded-tokens": "https://owasp.org/www-project-top-10-for-large-language-model-applications/",
     "firebase-open-rules": "https://cwe.mitre.org/data/definitions/732.html",
     "iam-wildcard-principal": "https://cwe.mitre.org/data/definitions/732.html",
     "iam-wildcard-action": "https://cwe.mitre.org/data/definitions/732.html",
     "gcp-allusers": "https://cwe.mitre.org/data/definitions/732.html",
     "curl-pipe-shell": "https://cwe.mitre.org/data/definitions/494.html",
 }
+
+
+# Orgs GitHub itself owns and maintains. `actions/checkout@v4` and `some-dev/action@v1`
+# are not the same supply-chain exposure, and ranking them identically is what makes a
+# CI-hygiene rule feel like noise on a repo that only uses first-party actions.
+FIRST_PARTY_ACTION_ORGS = ("actions", "github")
+_ACTION_USES_RE = re.compile(r"uses:\s*([\w\-.]+)/([\w\-./]+)@(\S+)")
+
+
+def _action_pin_severity(evidence: str) -> tuple[str, str, str] | None:
+    """(severity, title, remediation) for an unpinned action ref, or None to drop it."""
+    m = _ACTION_USES_RE.search(evidence)
+    if not m:
+        return ("medium", "GitHub Action pinned to a mutable ref",
+                "Pin third-party actions to a full commit SHA — tags are mutable and are a "
+                "live supply-chain risk.")
+    org, repo, ref = m.group(1), m.group(2), m.group(3)
+    if org.lower() in FIRST_PARTY_ACTION_ORGS:
+        return ("low", f"First-party action {org}/{repo} pinned to the mutable tag `{ref}`",
+                "GitHub owns this action, so the risk is much lower than a third-party one — "
+                "but the tag is still mutable. Pin to a commit SHA if you need fully "
+                "reproducible, tamper-evident builds (SLSA / SOC 2 change-management evidence).")
+    return ("medium", f"Third-party action {org}/{repo} pinned to the mutable tag `{ref}`",
+            f"`{org}` is not GitHub — that tag can be repointed at new code at any time, and it "
+            "runs with your workflow's secrets. Pin to a full commit SHA "
+            f"(`uses: {org}/{repo}@<40-char-sha> # {ref}`) and update it deliberately.")
 
 
 def _matches(rel: str, name: str, glob: str) -> bool:
@@ -98,6 +129,12 @@ def scan_file(path: Path, rel: str, tracked: set[str] | None = None) -> list[Fin
     if not text:
         return out
 
+    # A generated bundle is not source you can fix. Reporting `innerHTML` inside a
+    # vendored, minified library gives the user a finding with no actionable owner —
+    # the fix lives upstream, not in this repo.
+    if is_minified(path.name, text):
+        return out
+
     for rid, title, sev, glob, rx, fix in _COMPILED:
         if rid in CODE_RULE_IDS and suffix not in CODE_EXT:
             continue
@@ -105,10 +142,16 @@ def scan_file(path: Path, rel: str, tracked: set[str] | None = None) -> list[Fin
             continue
         for m in rx.finditer(text):
             line = line_of(text, m.start())
+            f_sev, f_title, f_fix = sev, title, fix
+            if rid == "ci-unpinned-action":
+                adj = _action_pin_severity(m.group(0))
+                if adj is None:
+                    continue
+                f_sev, f_title, f_fix = adj
             out.append(Finding(
-                id=f"config/{rid}", title=title, severity=sev, scanner=NAME,
+                id=f"config/{rid}", title=f_title, severity=f_sev, scanner=NAME,
                 path=rel, line=line, evidence=m.group(0).strip()[:160],
-                remediation=fix, reference=CWE.get(rid, "")))
+                remediation=f_fix, reference=CWE.get(rid, "")))
             if len(out) > 200:
                 break
 

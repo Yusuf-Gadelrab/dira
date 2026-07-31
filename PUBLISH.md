@@ -32,7 +32,7 @@ uvx twine check dist/*
 uv run --extra dev pytest -q
 ```
 
-**Expect:** `Successfully built` ×2, `PASSED` ×2, `42 passed`.
+**Expect:** `Successfully built` ×2, `PASSED` ×2, `98 passed`.
 
 ---
 
@@ -197,4 +197,4 @@ npm unpublish dira-scan@1.2.0
 npm deprecate dira-scan@1.2.0 "broken release, use 1.2.1"
 ```
 
-This is why Step 0's `twine check` and the 42-test run matter more than they look.
+This is why Step 0's `twine check` and the 98-test run matter more than they look.

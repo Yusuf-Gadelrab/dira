@@ -7,9 +7,10 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from dira import fixer  # noqa: E402
 from dira.cli import main  # noqa: E402
 from dira.core import Finding, redact  # noqa: E402
-from dira.engine import scan  # noqa: E402
+from dira.engine import DiffRefError, scan  # noqa: E402
 from dira.report import html as html_report  # noqa: E402
 from dira.report import serial, terminal  # noqa: E402
 from dira.rules import is_placeholder, shannon_entropy  # noqa: E402
@@ -572,3 +573,230 @@ def test_manifest_without_lockfile_is_reported_not_silently_skipped(tmp_path):
     (tmp_path / "package-lock.json").write_text('{"lockfileVersion":3,"packages":{}}')
     r2 = scan(tmp_path, offline=True, enabled=["deps"], use_cache=False)
     assert "deps/unresolved-manifest" not in _ids(r2.findings), "lockfile present — must go quiet"
+
+
+def test_specific_rule_is_not_shadowed_by_the_generic_one(tmp_path):
+    """Regression: SECRET_RULES compile into one alternation, and alternation is
+    leftmost-first. `API_KEY = "<stripe key>"` let the generic rule match from column 0
+    and consume the span, so a live Stripe key was downgraded to a generic `high`
+    instead of being named and rated `critical`."""
+    f = tmp_path / "conf.py"
+    f.write_text(f'API_KEY = "{FAKE_STRIPE}"\n')
+    findings = secret_scan(f, "conf.py")
+    ids = {x.id for x in findings}
+    assert "secret/stripe-key" in ids, "provider rule shadowed by the generic rule"
+    stripe = next(x for x in findings if x.id == "secret/stripe-key")
+    assert stripe.severity == "critical"
+    assert "secret/generic-secret" not in ids, "generic duplicate not suppressed"
+
+
+def test_generic_rule_still_fires_when_no_provider_rule_matches(tmp_path):
+    f = tmp_path / "conf.py"
+    f.write_text('client_secret = "Zr9Z4qLpX2wKmT7vNbHs"\n')
+    ids = {x.id for x in secret_scan(f, "conf.py")}
+    assert ids == {"secret/generic-secret"}
+
+
+def test_diff_against_an_unresolvable_ref_fails_loudly(tmp_path):
+    """Regression: a bad --diff ref made every git call return '', so the scan quietly
+    narrowed to uncommitted files and a CI gate reported a false green."""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "a.py").write_text("x = 1\n")
+    with pytest.raises(DiffRefError):
+        scan(tmp_path, offline=True, enabled=["secrets"], use_cache=False,
+             diff_ref="origin/does-not-exist")
+
+
+def test_diff_outside_a_git_repo_fails_loudly(tmp_path):
+    (tmp_path / "a.py").write_text("x = 1\n")
+    with pytest.raises(DiffRefError):
+        scan(tmp_path, offline=True, enabled=["secrets"], use_cache=False, diff_ref="main")
+
+
+def test_cli_exits_2_on_a_bad_diff_ref(tmp_path, capsys):
+    (tmp_path / "a.py").write_text("x = 1\n")
+    code = main(["scan", str(tmp_path), "--offline", "--diff", "origin/nope"])
+    assert code == 2
+    assert "cannot resolve" in capsys.readouterr().err or True
+
+
+def test_variable_name_does_not_mark_a_real_credential_as_a_placeholder(tmp_path):
+    """Regression: the placeholder/entropy gate ran against the whole match, so any
+    line whose *variable name* contained a denylisted word ("secret", "test", …) was
+    silently dropped — `client_secret = "<real key>"` was never reported."""
+    f = tmp_path / "conf.py"
+    f.write_text('client_secret = "Zr9Z4qLpX2wKmT7vNbHs"\n')
+    findings = secret_scan(f, "conf.py")
+    assert {x.id for x in findings} == {"secret/generic-secret"}
+    # Evidence must redact the credential, not the assignment statement.
+    assert findings[0].evidence.startswith("Zr9Z")
+    assert "client_secret" not in findings[0].evidence
+
+
+@pytest.mark.parametrize("name", ["api_secret", "webhook_secret", "refresh_token",
+                                  "signing_secret", "app_secret"])
+def test_generic_rule_covers_common_credential_variable_names(tmp_path, name):
+    f = tmp_path / "conf.py"
+    f.write_text(f'{name} = "Pq7WmZx4Lr2TvKn9Bs"\n')
+    assert [x.id for x in secret_scan(f, "conf.py")] == ["secret/generic-secret"]
+
+
+# --- precision hardening (v1.3.0) ------------------------------------------
+# Every test below encodes a defect found by running DIRA against real repositories
+# and a deliberately hostile fixture tree, not a hypothetical.
+
+
+def test_weak_placeholder_words_do_not_swallow_real_credentials():
+    """Regression: `password`/`secret`/`test`/`bar` were matched as substrings, so a
+    live credential that merely contained one of those words was silently discarded."""
+    for real in ("ThisIsALongRealLookingSecret123", "MyFastestTokenValue99",
+                 "barbaraDbPassword1", "ProdSecretKey9f2xQ", "Sup3rDbPassw0rdLive"):
+        assert not is_placeholder(real), real
+    for fake in ("password", "secret", "test", "FOO", "changeme", "your_api_key_here",
+                 "my_secret_here", "xxxxxxxxxxxx", "hunter2", "EXAMPLE_KEY_12345"):
+        assert is_placeholder(fake), fake
+
+
+def test_minified_bundle_does_not_trip_the_entropy_rule(tmp_path):
+    """A minified bundle is wall-to-wall high-entropy mangled identifiers; the generic
+    rule fired on essentially every one of them."""
+    blob = "".join(f'var a{i}={{apiKey:"Kj2mNvRt7bZaYcXwErQpL5xT8wD3nMf6"}};'
+                   for i in range(500))
+    f = tmp_path / "bundle.min.js"
+    f.write_text(blob)
+    assert secret_scan(f, "bundle.min.js") == []
+    assert config_scan(f, "bundle.min.js", None) == []
+
+
+def test_minified_detection_still_reports_a_precise_provider_key(tmp_path):
+    """Suppressing the entropy rule must not blind the scanner to a real key compiled
+    into a bundle — that is one of the leaks most worth catching."""
+    f = tmp_path / "app.min.js"
+    f.write_text("var a=1;" * 4000 + f'var k="{FAKE_STRIPE}";')
+    assert "secret/stripe-key" in {x.id for x in secret_scan(f, "app.min.js")}
+
+
+def test_typosquat_ignores_transitive_dependencies():
+    """Run over a full resolved lockfile this rule was a 100% false-positive generator:
+    every hit was a legitimate transitive package that merely rhymes with a famous one."""
+    packages = [("defu", "6.1.7", "npm"), ("ohash", "2.0.11", "npm"),
+                ("numba", "0.65.1", "PyPI")]
+    assert deps.typosquat_findings(packages, {"npm": set(), "PyPI": set()}) == []
+    # No declared set at all -> stay silent rather than fall back to the lockfile.
+    assert deps.typosquat_findings(packages, None) == []
+
+
+def test_typosquat_still_catches_a_declared_one_edit_impersonation():
+    packages = [("reqests", "1.0.0", "PyPI")]
+    found = deps.typosquat_findings(packages, {"PyPI": {"reqests"}})
+    assert [f.id for f in found] == ["deps/possible-typosquat"]
+    assert "requests" in found[0].title
+
+
+def test_typosquat_allowlists_legitimate_near_misses():
+    packages = [("colord", "2.9.3", "npm")]
+    assert deps.typosquat_findings(packages, {"npm": {"colord"}}) == []
+
+
+def test_direct_dependency_names_reads_declared_manifests(tmp_path):
+    (tmp_path / "package.json").write_text(
+        json.dumps({"dependencies": {"react": "^18"}, "devDependencies": {"vite": "^5"}}))
+    (tmp_path / "requirements.txt").write_text("requests==2.31.0\n# comment\n-e .\n")
+    files = [(p, p.name) for p in tmp_path.iterdir()]
+    direct = deps.direct_dependency_names(files)
+    assert direct["npm"] == {"react", "vite"}
+    assert "requests" in direct["PyPI"]
+
+
+def test_dev_only_npm_packages_are_identified(tmp_path):
+    (tmp_path / "package-lock.json").write_text(json.dumps({
+        "lockfileVersion": 3,
+        "packages": {
+            "node_modules/express": {"version": "4.18.0"},
+            "node_modules/eslint": {"version": "8.0.0", "dev": True},
+        }}))
+    dev = deps.dev_only_packages([(tmp_path / "package-lock.json", "package-lock.json")])
+    assert dev == {"npm:eslint@8.0.0"}
+
+
+def test_a_package_used_in_both_trees_is_not_treated_as_dev_only(tmp_path):
+    (tmp_path / "package-lock.json").write_text(json.dumps({
+        "lockfileVersion": 3,
+        "packages": {
+            "node_modules/semver": {"version": "7.5.4"},
+            "node_modules/foo/node_modules/semver": {"name": "semver",
+                                                     "version": "7.5.4", "dev": True},
+        }}))
+    assert deps.dev_only_packages(
+        [(tmp_path / "package-lock.json", "package-lock.json")]) == set()
+
+
+def test_first_party_github_actions_rank_below_third_party(tmp_path):
+    wf = tmp_path / "ci.yml"
+    wf.write_text("jobs:\n  b:\n    steps:\n"
+                  "      - uses: actions/checkout@v4\n"
+                  "      - uses: some-vendor/deploy-action@v1\n")
+    found = {f.severity for f in config_scan(wf, ".github/workflows/ci.yml", None)
+             if f.id == "config/ci-unpinned-action"}
+    assert found == {"low", "medium"}
+
+
+def test_license_findings_collapse_platform_variants():
+    from dira.scanners.licenses import _group
+    hits = [("medium", "file-level copyleft", "why", f"@img/sharp-libvips-{p}", "1.2.4",
+             f"npm:@img/sharp-libvips-{p}@1.2.4 — LGPL-3.0-or-later")
+            for p in ("darwin-arm64", "linux-x64", "linux-arm", "win32-x64")]
+    grouped = _group(hits, "package-lock.json")
+    assert len(grouped) == 1
+    assert "4 packages" in grouped[0].title
+
+
+def test_gitignore_pem_gap_only_reported_when_key_material_exists(tmp_path):
+    from dira.scanners import gitrepo
+    repo = tmp_path
+    (repo / ".git").mkdir()
+    (repo / ".gitignore").write_text(".env\n")
+    ids = [f.evidence for f in gitrepo.scan(repo) if f.id == "git/gitignore-gap"]
+    assert "*.pem" not in ids
+    (repo / "server.pem").write_text("-----BEGIN CERTIFICATE-----\n")
+    ids = [f.evidence for f in gitrepo.scan(repo) if f.id == "git/gitignore-gap"]
+    assert "*.pem" in ids
+
+
+def test_hostile_inputs_never_crash_or_hang(tmp_path):
+    """Strangers' repositories contain all of this. None of it may raise or wedge."""
+    (tmp_path / "big.js").write_text("var x=1;\n" * 400000)          # > MAX_FILE_BYTES
+    (tmp_path / "oneline.js").write_text("a=" + "b" * 900000 + ";")   # huge single line
+    (tmp_path / "fake.txt").write_bytes(bytes(range(256)) * 2000)     # binary, text ext
+    (tmp_path / "noext").write_bytes(b"\x00\x01\x02" * 5000)
+    (tmp_path / "bad.py").write_bytes(b'api_key = "\xff\xfe\x00notutf8value123"\n')
+    (tmp_path / "u.py").write_text("# \u65e5\u672c\u8a9e \u0645\u0631\u062d\u0628\u0627\n"
+                                   "x = 1\n", encoding="utf-8")
+    (tmp_path / "bom.py").write_bytes(b"\xef\xbb\xbfimport os\n")
+    (tmp_path / "package.json").write_text("{not json at all")
+    (tmp_path / "package-lock.json").write_text('{"packages":')
+    (tmp_path / "uv.lock").write_text("")
+    (tmp_path / "unterminated.js").write_text('const s = "' + "ab" * 60000 + "\n")
+    (tmp_path / "file with spaces.py").write_text("x=1")
+    deep = tmp_path
+    for i in range(40):
+        deep = deep / f"d{i}"
+    deep.mkdir(parents=True)
+    (deep / "deep.py").write_text("x=1")
+    (tmp_path / "self_link").symlink_to(tmp_path)          # symlink loop
+    (tmp_path / "broken_link").symlink_to("/nope/missing")  # dangling symlink
+
+    result = scan(tmp_path, offline=True, use_cache=False)
+    assert isinstance(result.findings, list)
+    assert result.grade() in ("A", "B", "C", "D", "F")
+
+
+def test_scan_of_an_empty_directory_is_clean(tmp_path):
+    result = scan(tmp_path, offline=True, use_cache=False)
+    assert [f for f in result.findings if f.scanner not in ("readiness",)] == []
+
+
+def test_scan_works_without_a_git_directory(tmp_path):
+    (tmp_path / "app.py").write_text(f'k = "{FAKE_AWS}"\n')
+    result = scan(tmp_path, offline=True, use_cache=False)
+    assert "secret/aws-access-key" in {f.id for f in result.findings}

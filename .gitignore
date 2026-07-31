@@ -17,3 +17,14 @@ __pycache__/
 node_modules/
 *.sarif
 report.html
+
+# Internal business/legal strategy — NEVER commit to this public repo.
+# Lives in ~/Desktop/Money-Machine-Assets/dira-internal/
+GO-LIVE.md
+GTM-*.md
+LAUNCH-READINESS.md
+VIABILITY.md
+PUBLISH-CHECKLIST.md
+DISTRIBUTION.md
+launch/target-list.md
+service/

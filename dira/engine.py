@@ -93,6 +93,12 @@ def scan(root: Path, *, enabled: list[str] | None = None, target: str | None = N
         dep_findings, dep_stats = deps_scanner.scan(all_files, offline=offline, workers=workers)
         findings.extend(dep_findings)
         findings.extend(deps_scanner.unlocked_manifests(all_files))
+        # Supply-chain checks below are local/offline — manifest text already on disk,
+        # no network — so they run on every scan regardless of --offline.
+        findings.extend(deps_scanner.unpinned_dependency_findings(all_files))
+        findings.extend(deps_scanner.install_hook_findings(all_files))
+        findings.extend(deps_scanner.typosquat_findings(
+            packages, deps_scanner.direct_dependency_names(all_files)))
         stats["deps"] = dep_stats
 
     if "licenses" in enabled and packages:

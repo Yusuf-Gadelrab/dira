@@ -4,7 +4,7 @@
 
 **Security audit for startup codebases.** One command, zero dependencies.
 
-`secrets` · `dependency CVEs` · `misconfigurations` · `git-history leaks` · `live surface` · `readiness score`
+`secrets` · `dependency CVEs` · `misconfigurations` · `licenses` · `git-history leaks` · `live surface` · `readiness score`
 
 </div>
 
@@ -25,12 +25,13 @@ uvx dira-scan . -f html -o report.html --open
 
 | Scanner | What it finds |
 |---|---|
-| `secrets` | 20 credential patterns (AWS, Stripe, OpenAI, Anthropic, GitHub, GCP, Slack, npm, DSNs, private keys) plus an entropy-gated generic rule. Values are **redacted** in every report. |
-| `config` | Docker (root user, `:latest`, build-ARG secrets), compose/k8s (`privileged`, hostPath), Terraform (`0.0.0.0/0`, public buckets, unencrypted storage), GitHub Actions (`pull_request_target`, mutable action refs, script injection), and code-level issues (SQLi by concatenation, `shell=True`, wildcard CORS, disabled TLS verification, `eval`/`pickle`, weak password hashing, debug mode on). |
+| `secrets` | 24 credential patterns (AWS, Stripe, OpenAI, Anthropic, GitHub, GCP, Slack, npm, DSNs, private keys) plus an entropy-gated generic rule. Values are **redacted** in every report. |
+| `config` | 38 rules across Docker (root user, `:latest`, build-ARG secrets), compose/k8s (`privileged`, hostPath), Terraform (`0.0.0.0/0`, public buckets, unencrypted storage), GitHub Actions (`pull_request_target`, mutable action refs, script injection), cloud (public Firebase rules, `"Principal": "*"`, GCP `allUsers`, `curl \| sh`), frontend (`NEXT_PUBLIC_*` secrets, tokens in localStorage, innerHTML/`dangerouslySetInnerHTML`, wildcard `postMessage`, JWT `none`), LLM apps (`dangerouslyAllowBrowser`, prompt concatenation, model output piped to an executor), and server code (SQLi by concatenation, `shell=True`, wildcard CORS, disabled TLS verification, `eval`/`pickle`, weak password hashing, debug mode on). |
 | `deps` | Every package in your lockfiles resolved against **OSV.dev** — npm, PyPI, Go, crates.io, RubyGems. Batched, free, no API key, with CVSS-estimated severity and the exact fixed version. |
 | `git` | Secrets buried in commit history (deleting the file does not rotate the key), tracked `.env`/`.pem`/keystores, credentials in the remote URL, `.gitignore` gaps. |
 | `surface` | Live domain: TLS validity + expiry, HSTS/CSP/nosniff/frame-options, cookie flags, HTTP→HTTPS redirect, version-disclosure headers, and publicly served `/.env`, `/.git/config`, `/actuator/env`. |
-| `readiness` | An 18-point **startup security-readiness score** modelled on what SOC 2 auditors and enterprise security questionnaires actually ask for — lockfiles, Dependabot, CI, tests, secret scanning, SAST, CODEOWNERS, SECURITY.md, IaC, observability, incident response, backups, privacy. |
+| `licenses` | Every dependency's license resolved from npm/PyPI, classified into permissive, file-level copyleft (MPL/LGPL), strong copyleft (GPL), and network copyleft (AGPL/SSPL) — with a license inventory for your diligence folder. |
+| `readiness` | An 18-check, 80-point **startup security-readiness score** modelled on what SOC 2 auditors and enterprise security questionnaires actually ask for — lockfiles, Dependabot, CI, tests, secret scanning, SAST, CODEOWNERS, SECURITY.md, IaC, observability, incident response, backups, privacy. |
 
 Every finding carries a severity, a location, redacted evidence, a concrete remediation, and a CWE/OSV reference.
 
@@ -77,7 +78,7 @@ Or use the SARIF path so findings land in the Security tab — `dira init` write
 ```yaml
 repos:
   - repo: https://github.com/Yusuf-Gadelrab/dira
-    rev: v1.0.0
+    rev: v1.2.0
     hooks:
       - id: dira
 ```
@@ -95,7 +96,7 @@ for f in result.findings:
 
 ## Why it's fast
 
-- **One walk, one regex.** All 20 secret patterns compile into a single alternation, so each file is read once and matched once — not once per rule.
+- **One walk, two regexes.** The 24 secret patterns compile into a single alternation, so each file is read once rather than matched once per rule. A second pass over the 23 provider-specific patterns runs alongside it so a specific rule is never shadowed by the broad generic one on the same line.
 - **Incremental cache.** `.dira-cache.json` keys results on `(size, mtime, ruleset version)`; an unchanged file is never re-read. Second runs on a large repo are typically 5–10× faster.
 - **Parallel by default.** File scanning and OSV detail lookups run on a thread pool sized to your CPU.
 - **Batched network.** Up to 900 packages per OSV request, advisory details fetched concurrently and capped.
