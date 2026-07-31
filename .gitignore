@@ -17,6 +17,7 @@ __pycache__/
 node_modules/
 *.sarif
 report.html
+*.tgz
 
 # Internal business/legal strategy — NEVER commit to this public repo.
 # Lives in ~/Desktop/Money-Machine-Assets/dira-internal/
